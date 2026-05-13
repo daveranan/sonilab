@@ -5,6 +5,7 @@ const root = process.cwd();
 const configPath = path.join(root, "src-tauri", "tauri.conf.json");
 const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
 const windows = config.bundle?.windows ?? {};
+const updater = config.plugins?.updater ?? {};
 const failures = [];
 const warnings = [];
 
@@ -24,9 +25,11 @@ if (!windows.certificateThumbprint && !windows.signCommand) {
 if (!process.env.TAURI_SIGNING_PRIVATE_KEY) {
   warnings.push("TAURI_SIGNING_PRIVATE_KEY is not set for updater artifact signing.");
 }
-if (!process.env.SONILABS_UPDATE_ENDPOINT && !process.env.TAURI_UPDATE_ENDPOINT) {
-  warnings.push("No update endpoint env var is set.");
-}
+if (config.bundle?.createUpdaterArtifacts !== true)
+  failures.push("bundle.createUpdaterArtifacts must be true.");
+if (!updater.pubkey) failures.push("plugins.updater.pubkey is missing.");
+if (!Array.isArray(updater.endpoints) || updater.endpoints.length === 0)
+  failures.push("plugins.updater.endpoints must include at least one endpoint.");
 
 for (const warning of warnings) console.warn(`signing-readiness: ${warning}`);
 

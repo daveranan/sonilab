@@ -41,7 +41,11 @@ function replacePackageVersion(toml, packageName, version) {
 
 const tauriConfig = await readJson("src-tauri/tauri.conf.json");
 const currentVersion = tauriConfig.version;
-const nextVersion = nextPatchVersion(currentVersion);
+const tagVersion =
+  process.env.GITHUB_REF_TYPE === "tag"
+    ? /^v?(\d+\.\d+\.\d+)$/.exec(process.env.GITHUB_REF_NAME ?? "")?.[1]
+    : undefined;
+const nextVersion = tagVersion ?? nextPatchVersion(currentVersion);
 
 if (!dryRun) {
   for (const path of jsonFiles) {

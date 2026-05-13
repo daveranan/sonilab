@@ -39,7 +39,9 @@ Run `npm run release:check-signing` before release. It passes for signing-ready 
 
 ## Update Readiness
 
-The app exposes an update-readiness view in Settings. Release update checks require `SONILABS_UPDATE_ENDPOINT` or `TAURI_UPDATE_ENDPOINT` plus `TAURI_SIGNING_PUBLIC_KEY`; updater artifact signing requires `TAURI_SIGNING_PRIVATE_KEY`.
+The app uses Tauri's updater with GitHub Releases metadata at `https://github.com/daveranan/sonilab/releases/latest/download/latest.json`.
+
+Release packaging requires `TAURI_SIGNING_PRIVATE_KEY`. The matching public key is stored in `src-tauri/tauri.conf.json`; the private key must stay out of Git and should be stored as a GitHub Actions secret. `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` is optional when the key was generated without a password.
 
 ## Current Machine Status
 

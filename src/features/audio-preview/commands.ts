@@ -2,6 +2,8 @@ import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { startDrag as startCrabnebulaDrag } from "@crabnebula/tauri-plugin-drag";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
+import { relaunch } from "@tauri-apps/plugin-process";
+import { check } from "@tauri-apps/plugin-updater";
 
 import type { LevelAnalysisPair } from "./levelAnalysis";
 import {
@@ -58,6 +60,11 @@ export type UpdateFlowStatus = {
   signingPublicKeyConfigured: boolean;
   updateCheckAvailable: boolean;
   message: string;
+};
+
+export type AppUpdateInstallResult = {
+  status: "not-available" | "installed";
+  version?: string;
 };
 
 export type ExportFormatSettings = {
@@ -366,6 +373,37 @@ export async function licenseAttributionReport(
 export async function updateFlowStatus(): Promise<UpdateFlowStatus | null> {
   if (!hasTauri()) return null;
   return invoke<UpdateFlowStatus>("update_flow_status");
+}
+
+export async function checkInstallAndRelaunchUpdate(
+  onStatus?: (status: string) => void,
+): Promise<AppUpdateInstallResult> {
+  if (!hasTauri()) return { status: "not-available" };
+  onStatus?.("Checking for updates...");
+  const update = await check();
+  if (!update) {
+    onStatus?.("No update available.");
+    return { status: "not-available" };
+  }
+
+  let downloaded = 0;
+  let totalBytes = 0;
+  onStatus?.(`Downloading ${update.version}...`);
+  await update.downloadAndInstall((event) => {
+    if (event.event === "Started") {
+      totalBytes = event.data.contentLength ?? 0;
+    } else if (event.event === "Progress") {
+      downloaded += event.data.chunkLength;
+      if (totalBytes > 0) {
+        const percent = Math.round((downloaded / totalBytes) * 100);
+        onStatus?.(`Downloading ${update.version} (${percent}%)...`);
+      }
+    } else if (event.event === "Finished") {
+      onStatus?.("Update installed. Restarting...");
+    }
+  });
+  await relaunch();
+  return { status: "installed", version: update.version };
 }
 
 export async function queueGainExportJob(input: {

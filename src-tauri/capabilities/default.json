@@ -10,6 +10,8 @@
     "opener:allow-reveal-item-in-dir",
     "dialog:default",
     "drag:default",
+    "updater:default",
+    "process:allow-restart",
     "core:window:allow-start-dragging",
     "core:window:allow-hide",
     "core:window:allow-show",

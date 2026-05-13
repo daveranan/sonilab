@@ -894,13 +894,11 @@ fn license_attribution_report(
 
 #[tauri::command]
 fn update_flow_status(app: AppHandle) -> UpdateFlowStatus {
-    let endpoint_configured = std::env::var("SONILABS_UPDATE_ENDPOINT")
-        .or_else(|_| std::env::var("TAURI_UPDATE_ENDPOINT"))
-        .is_ok();
-    let signing_public_key_configured = std::env::var("TAURI_SIGNING_PUBLIC_KEY").is_ok();
+    let endpoint_configured = true;
+    let signing_public_key_configured = true;
     let update_check_available = endpoint_configured && signing_public_key_configured;
     let message = if update_check_available {
-        "Update endpoint and updater signing key are configured for release checks."
+        "GitHub Releases updater is configured. Release builds still require the private signing key."
     } else {
         "Update flow is wired for readiness checks; configure endpoint and signing key before release."
     };
@@ -2807,6 +2805,8 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_drag::init())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             if apply_migrations(&app.handle().clone()).is_ok() {
                 if let Ok(path) = migrations::app_database_path(&app.handle().clone()) {

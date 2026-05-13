@@ -51,6 +51,8 @@ npm run build:windows
 
 Windows packaging requires Node.js, npm, Rust/Cargo, Visual Studio Build Tools with C++ support, Microsoft Edge WebView2 Runtime, and the FFmpeg sidecar. See `docs/windows-build.md` for the full checklist.
 
-## Release Notes
+## Updates
 
-The repository is prepared for GitHub-based distribution, but automatic updates are not enabled yet. For private source code with public app updates, use a separate public releases repository that contains only signed installers, update bundles, and updater metadata.
+Automatic updates use Tauri updater artifacts published through GitHub Releases. Tag builds upload the Windows installers, signatures, and `latest.json`; installed apps check the latest release metadata and install signed updates.
+
+Release signing requires the private updater key in `TAURI_SIGNING_PRIVATE_KEY`.

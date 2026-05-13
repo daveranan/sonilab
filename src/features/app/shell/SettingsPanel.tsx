@@ -20,6 +20,7 @@ import { Button } from "@/components/ui/button";
 import { shortcutHelpItems } from "@/features/app/commandRegistry";
 import {
   cacheManagementSummary,
+  checkInstallAndRelaunchUpdate,
   enforceCacheLimit,
   licenseAttributionReport,
   openLocalPath,
@@ -115,6 +116,7 @@ export function SettingsPanel({
   const [cacheStatus, setCacheStatus] = useState<string | null>(null);
   const [reportRows, setReportRows] = useState<LicenseAttributionRow[]>([]);
   const [updateStatus, setUpdateStatus] = useState<UpdateFlowStatus | null>(null);
+  const [updateActionStatus, setUpdateActionStatus] = useState<string | null>(null);
   const [appPaths, setAppPaths] = useState<AppPaths | null>(null);
   const [logExport, setLogExport] = useState<LogExport | null>(null);
   const [diagnosticsStatus, setDiagnosticsStatus] = useState<string | null>(null);
@@ -173,6 +175,14 @@ export function SettingsPanel({
       ),
     [reportRows],
   );
+  const handleUpdateCheck = useCallback(() => {
+    setUpdateActionStatus("Checking for updates...");
+    void checkInstallAndRelaunchUpdate(setUpdateActionStatus).catch((error: unknown) =>
+      setUpdateActionStatus(
+        error instanceof Error ? error.message : "Update check failed.",
+      ),
+    );
+  }, []);
 
   if (!open) return null;
 
@@ -509,8 +519,20 @@ export function SettingsPanel({
                     </span>
                   </div>
                   <div className="mt-2 text-[11px] text-muted-foreground">
-                    {updateStatus?.message ??
+                    {updateActionStatus ??
+                      updateStatus?.message ??
                       "Update checks are signing-ready, but no update endpoint is configured."}
+                  </div>
+                  <div className="mt-3 flex justify-end">
+                    <Button
+                      className="h-8 gap-2"
+                      onClick={handleUpdateCheck}
+                      title="Check for updates"
+                      variant="secondary"
+                    >
+                      <Download className="size-4" />
+                      Check updates
+                    </Button>
                   </div>
                 </PanelSection>
               </>

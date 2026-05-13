@@ -33,6 +33,7 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": [
       "nsis",
       "msi"
@@ -59,5 +60,16 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQyRUVEMDUzOEVEQjU2MUQKUldRZFZ0dU9VOUR1MGlva2xjdFNKMFZYM1cyUXkvTkFOS2lYaCs5UWVNcHNMK2Z0M0hKREliS1kK",
+      "endpoints": [
+        "https://github.com/daveranan/sonilab/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }
