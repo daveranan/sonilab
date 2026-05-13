@@ -31,4 +31,4 @@ jobs:
         run: npm run build
 
       - name: Build Windows package
-        run: npm run build:windows
+        run: npm run build:windows:ci
