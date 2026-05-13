@@ -11,14 +11,19 @@ const config = JSON.parse(await readFile("src-tauri/tauri.conf.json", "utf8"));
 const version = config.version;
 const nsisDir = "src-tauri/target/release/bundle/nsis";
 const entries = await readdir(nsisDir);
-const setupName = entries.find((entry) => entry.endsWith("_x64-setup.exe"));
+const setupName = entries.find(
+  (entry) => entry.includes(`_${version}_`) && entry.endsWith("_x64-setup.exe"),
+);
 
-if (!setupName) throw new Error(`No NSIS setup.exe found in ${nsisDir}.`);
+if (!setupName) {
+  throw new Error(`No NSIS setup.exe found for version ${version} in ${nsisDir}.`);
+}
 
 const sigPath = join(nsisDir, `${setupName}.sig`);
 const signature = (await readFile(sigPath, "utf8")).trim();
+const releaseAssetName = basename(setupName).replaceAll(" ", ".");
 const url = `https://github.com/${repository}/releases/download/${tag}/${encodeURIComponent(
-  basename(setupName),
+  releaseAssetName,
 )}`;
 
 const latest = {

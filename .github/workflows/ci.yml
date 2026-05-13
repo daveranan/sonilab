@@ -62,6 +62,10 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Clear old bundle outputs
+        shell: pwsh
+        run: Remove-Item -Recurse -Force src-tauri/target/release/bundle -ErrorAction SilentlyContinue
+
       - name: Build Windows package
         run: npm run build:windows:ci
         env:
