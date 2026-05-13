@@ -1,0 +1,13 @@
+{
+  "benchmark": "phase3-50k-scrolling-active-selection",
+  "rowCount": 50000,
+  "rowHeight": 32,
+  "viewportHeight": 640,
+  "overscan": 12,
+  "visibleCount": 44,
+  "elapsedMs": 13.289,
+  "worstWindowMs": 1.216,
+  "activeRowId": "asset-49992",
+  "selectedCount": 1,
+  "passed": true
+}

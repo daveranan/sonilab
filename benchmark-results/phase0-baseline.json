@@ -1,0 +1,47 @@
+{
+  "generatedAt": "2026-05-12T02:02:13.867Z",
+  "phase": "0",
+  "machine": {
+    "platform": "win32",
+    "arch": "x64",
+    "node": "v24.11.1"
+  },
+  "cases": [
+    {
+      "name": "indexing",
+      "status": "skipped",
+      "reason": "Feature implementation belongs to later phases.",
+      "durationMs": 0.001
+    },
+    {
+      "name": "scrolling",
+      "status": "skipped",
+      "reason": "Feature implementation belongs to later phases.",
+      "durationMs": 0
+    },
+    {
+      "name": "search",
+      "status": "skipped",
+      "reason": "Feature implementation belongs to later phases.",
+      "durationMs": 0
+    },
+    {
+      "name": "preview-switching",
+      "status": "skipped",
+      "reason": "Feature implementation belongs to later phases.",
+      "durationMs": 0
+    },
+    {
+      "name": "waveform-generation",
+      "status": "skipped",
+      "reason": "Feature implementation belongs to later phases.",
+      "durationMs": 0.001
+    },
+    {
+      "name": "export",
+      "status": "skipped",
+      "reason": "Feature implementation belongs to later phases.",
+      "durationMs": 0
+    }
+  ]
+}

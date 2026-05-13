@@ -1,0 +1,10 @@
+{
+  "benchmark": "phase5-cached-preview-switching-cache-path",
+  "note": "Node microbenchmark for cached switch bookkeeping only; audible Web Audio start latency still needs an app/browser benchmark.",
+  "iterations": 2000,
+  "p50Ms": 0,
+  "p95Ms": 0,
+  "maxMs": 0.351,
+  "targetMs": 100,
+  "passed": true
+}

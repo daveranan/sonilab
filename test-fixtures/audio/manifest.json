@@ -1,0 +1,28 @@
+{
+  "generatedAt": "2026-05-12T02:02:14.052Z",
+  "source": "Synthetic 880 Hz decaying sine tone for tests only.",
+  "ffmpeg": "ffmpeg",
+  "files": [
+    {
+      "file": "short-tone.wav",
+      "generated": true,
+      "error": null
+    },
+    {
+      "file": "short-tone.mp3",
+      "generated": true,
+      "error": null
+    },
+    {
+      "file": "short-tone.ogg",
+      "generated": true,
+      "error": null
+    },
+    {
+      "file": "short-tone.flac",
+      "generated": true,
+      "error": null
+    }
+  ],
+  "skipped": []
+}

@@ -1,0 +1,2 @@
+ALTER TABLE analysis ADD COLUMN headroom_db REAL;
+ALTER TABLE analysis ADD COLUMN sample_count INTEGER NOT NULL DEFAULT 0;

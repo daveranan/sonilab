@@ -1,0 +1,18 @@
+{
+  "benchmark": "quick-browse-selection-export",
+  "generatedAt": "2026-05-12T21:54:44.809Z",
+  "waveformCache": {
+    "fixtureBytes": 256016,
+    "channelCount": 2,
+    "peakCount": 32000,
+    "rangePeakCount": 4096,
+    "iterations": 120,
+    "p50Ms": 0.0557,
+    "p95Ms": 0.4641,
+    "maxMs": 1.8983
+  },
+  "notes": [
+    "Measures local binary waveform range-read parsing only.",
+    "App-level audible playback and native drag latency still require an in-app benchmark harness."
+  ]
+}
