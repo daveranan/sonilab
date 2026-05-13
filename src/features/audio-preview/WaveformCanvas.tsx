@@ -701,7 +701,7 @@ export function WaveformCanvas({
       knownSampleRate,
       width,
     );
-    let coldTimer: number | null = null;
+    const coldTimer: number | null = null;
     const loadWaveform = async () => {
       try {
         const peaks = await getCachedWaveformPeaks(

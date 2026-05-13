@@ -104,8 +104,6 @@ export function useDebouncedBrowse({
   useEffect(() => {
     if (!enabled) {
       gateRef.current.begin("browse-disabled");
-      setResponse(null);
-      setLoading(false);
       return;
     }
     const request = makeRequest();
@@ -122,8 +120,8 @@ export function useDebouncedBrowse({
   );
 
   return {
-    response,
-    loading,
+    response: enabled ? response : null,
+    loading: enabled ? loading : false,
     executeNow,
     removeRowsById,
   };
