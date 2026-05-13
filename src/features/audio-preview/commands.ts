@@ -67,6 +67,13 @@ export type AppUpdateInstallResult = {
   version?: string;
 };
 
+export type AppUpdateAvailability = {
+  available: boolean;
+  version?: string;
+  currentVersion?: string;
+  body?: string;
+};
+
 export type ExportFormatSettings = {
   wavBitDepth?: number;
   wavSampleRate?: number;
@@ -404,6 +411,18 @@ export async function checkInstallAndRelaunchUpdate(
   });
   await relaunch();
   return { status: "installed", version: update.version };
+}
+
+export async function checkForAppUpdate(): Promise<AppUpdateAvailability> {
+  if (!hasTauri()) return { available: false };
+  const update = await check();
+  if (!update) return { available: false };
+  return {
+    available: true,
+    body: update.body,
+    currentVersion: update.currentVersion,
+    version: update.version,
+  };
 }
 
 export async function queueGainExportJob(input: {

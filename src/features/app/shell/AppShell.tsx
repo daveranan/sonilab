@@ -10,9 +10,12 @@ import type React from "react";
 import { Button } from "@/components/ui/button";
 import { commandFromKeyboardEvent } from "@/features/app/commandRegistry";
 import {
+  checkForAppUpdate,
+  checkInstallAndRelaunchUpdate,
   deleteBrowseRow,
   openLocalPath,
   openBrowseRowInExplorer,
+  type AppUpdateAvailability,
 } from "@/features/audio-preview/commands";
 import { audioPreviewService } from "@/features/audio-preview/previewService";
 import type {
@@ -834,6 +837,8 @@ function AppShellContent() {
   const settingsOpen = modalManager.isOpen("settings");
   const [settingsTab, setSettingsTab] = useState<SettingsPanelTab>("main");
   const [refreshStatus, setRefreshStatus] = useState<string | null>(null);
+  const [startupUpdate, setStartupUpdate] = useState<AppUpdateAvailability | null>(null);
+  const [startupUpdateStatus, setStartupUpdateStatus] = useState<string | null>(null);
   const [metadata, setMetadata] = useState<LazyMetadataResponse["metadataByRowId"]>({});
   const [sidebarWidth, setSidebarWidth] = useState(
     Math.max(240, Math.min(360, storedShellSession.sidebarWidth ?? 280)),
@@ -930,6 +935,21 @@ function AppShellContent() {
     refreshCollections();
     refreshActivity();
   }, [refreshActivity, refreshCollections, refreshLibraries]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const handle = window.setTimeout(() => {
+      void checkForAppUpdate()
+        .then((update) => {
+          if (!cancelled && update.available) setStartupUpdate(update);
+        })
+        .catch(() => undefined);
+    }, 2500);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(handle);
+    };
+  }, []);
 
   useEffect(() => {
     const handler = (event: Event) => {
@@ -2860,6 +2880,43 @@ function AppShellContent() {
             </div>
           </section>
         </div>
+      ) : null}
+      {startupUpdate?.available ? (
+        <section className="fixed bottom-5 right-5 z-50 w-[min(360px,calc(100vw-32px))] rounded-md border border-border bg-panel p-3 shadow-2xl">
+          <div className="mb-1 text-[13px] font-semibold text-foreground">
+            Update {startupUpdate.version} available
+          </div>
+          <div className="mb-3 text-[11px] text-muted-foreground">
+            {startupUpdateStatus ??
+              `Current version ${startupUpdate.currentVersion ?? "installed"}.`}
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button
+              className="h-8"
+              disabled={Boolean(startupUpdateStatus?.includes("Downloading"))}
+              onClick={() => {
+                setStartupUpdateStatus("Downloading update...");
+                void checkInstallAndRelaunchUpdate(setStartupUpdateStatus).catch(
+                  (error: unknown) =>
+                    setStartupUpdateStatus(
+                      error instanceof Error ? error.message : "Update failed.",
+                    ),
+                );
+              }}
+              size="sm"
+            >
+              Install
+            </Button>
+            <Button
+              className="h-8"
+              onClick={() => setStartupUpdate(null)}
+              size="sm"
+              variant="ghost"
+            >
+              Later
+            </Button>
+          </div>
+        </section>
       ) : null}
       <SettingsPanel
         activeTab={settingsTab}
