@@ -429,17 +429,31 @@ pub fn get_waveform_peaks_with_sidecar(
             };
             let deadline =
                 JobDeadline::new(std::time::Duration::from_secs(WAVEFORM_DEADLINE_SECONDS));
-            generate_audiowaveform_peaks(
-                connection,
-                cache_root,
-                resource_dir,
-                &asset,
-                content_key,
-                channel_mode,
-                samples_per_peak,
-                &token,
-                &deadline,
-            )
+            if cfg!(target_os = "macos") {
+                generate_ffmpeg_wav_peaks(
+                    connection,
+                    cache_root,
+                    resource_dir,
+                    &asset,
+                    content_key,
+                    channel_mode,
+                    samples_per_peak,
+                    &token,
+                    &deadline,
+                )
+            } else {
+                generate_audiowaveform_peaks(
+                    connection,
+                    cache_root,
+                    resource_dir,
+                    &asset,
+                    content_key,
+                    channel_mode,
+                    samples_per_peak,
+                    &token,
+                    &deadline,
+                )
+            }
         };
         match sidecar_result {
             Ok(peaks) => return Ok(peaks),
@@ -1016,6 +1030,92 @@ fn generate_audiowaveform_peaks(
     Ok(peaks)
 }
 
+fn generate_ffmpeg_wav_peaks(
+    connection: &Connection,
+    cache_root: &Path,
+    resource_dir: Option<&Path>,
+    asset: &AssetAudioRecord,
+    content_key: &str,
+    channel_mode: &str,
+    samples_per_peak: i64,
+    token: &CancellationToken,
+    deadline: &JobDeadline,
+) -> Result<WaveformPeakData, String> {
+    let ffmpeg = resolve_ffmpeg(resource_dir)?;
+    let cache_key = waveform_cache_key(content_key, channel_mode, samples_per_peak);
+    let waveform_dir = cache_root.join("waveforms");
+    fs::create_dir_all(&waveform_dir).map_err(|error| error.to_string())?;
+    let wav_path = waveform_dir.join(format!("{}.ffmpeg.wav", safe_cache_file_name(&cache_key)));
+
+    let output = run_ffmpeg(
+        &ffmpeg,
+        vec![
+            "-hide_banner".to_string(),
+            "-loglevel".to_string(),
+            "error".to_string(),
+            "-y".to_string(),
+            "-i".to_string(),
+            asset.path_or_url.clone(),
+            "-map".to_string(),
+            "0:a:0".to_string(),
+            "-vn".to_string(),
+            "-acodec".to_string(),
+            "pcm_s16le".to_string(),
+            wav_path.to_string_lossy().to_string(),
+        ],
+        token,
+        deadline,
+    );
+
+    match output {
+        Ok(output) if output.status.success() => {}
+        Ok(output) => {
+            let _ = fs::remove_file(&wav_path);
+            let detail = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("ffmpeg waveform conversion failed: {}", detail.trim()));
+        }
+        Err(error) => {
+            let _ = fs::remove_file(&wav_path);
+            return Err(error);
+        }
+    }
+
+    let result = if fs::metadata(&wav_path)
+        .map(|metadata| metadata.len() > SPARSE_WAVEFORM_FILE_BYTES)
+        .unwrap_or(false)
+    {
+        generate_wav_peaks_sparse(
+            &wav_path,
+            &asset.id,
+            content_key,
+            channel_mode,
+            samples_per_peak,
+            token,
+            deadline,
+        )
+    } else {
+        fs::read(&wav_path)
+            .map_err(|error| error.to_string())
+            .and_then(|bytes| {
+                generate_wav_peaks(
+                    &bytes,
+                    &asset.id,
+                    content_key,
+                    channel_mode,
+                    samples_per_peak,
+                    token,
+                    deadline,
+                )
+            })
+    };
+    let _ = fs::remove_file(&wav_path);
+
+    let mut peaks = result?;
+    cache_waveform_file(connection, &waveform_dir, &mut peaks)?;
+    peaks.cached = false;
+    Ok(peaks)
+}
+
 fn resolve_audiowaveform(resource_dir: Option<&Path>) -> Result<PathBuf, String> {
     let executable = audiowaveform_executable_name();
     let mut candidates = Vec::new();
@@ -1038,6 +1138,66 @@ fn audiowaveform_executable_name() -> &'static str {
         "audiowaveform.exe"
     } else {
         "audiowaveform"
+    }
+}
+
+fn resolve_ffmpeg(resource_dir: Option<&Path>) -> Result<PathBuf, String> {
+    let executable = ffmpeg_executable_name();
+    let mut candidates = Vec::new();
+    if let Ok(path) = std::env::var("FFMPEG_PATH") {
+        candidates.push(PathBuf::from(path));
+    }
+    if let Some(resource_dir) = resource_dir {
+        candidates.push(resource_dir.join("bin").join(executable));
+    }
+    candidates.push(PathBuf::from("src-tauri/bin").join(executable));
+    candidates.push(PathBuf::from("ffmpeg"));
+    candidates
+        .into_iter()
+        .find(|candidate| candidate == Path::new("ffmpeg") || candidate.is_file())
+        .ok_or_else(|| "FFmpeg sidecar was not found for waveform conversion".to_string())
+}
+
+fn ffmpeg_executable_name() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "ffmpeg.exe"
+    } else {
+        "ffmpeg"
+    }
+}
+
+fn run_ffmpeg(
+    ffmpeg: &Path,
+    args: Vec<String>,
+    token: &CancellationToken,
+    deadline: &JobDeadline,
+) -> Result<std::process::Output, String> {
+    let mut command = Command::new(ffmpeg);
+    command
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(target_os = "windows")]
+    command.creation_flags(CREATE_NO_WINDOW);
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("failed to start ffmpeg: {error}"))?;
+    loop {
+        if child
+            .try_wait()
+            .map_err(|error| format!("failed to wait for ffmpeg: {error}"))?
+            .is_some()
+        {
+            return child
+                .wait_with_output()
+                .map_err(|error| format!("failed to read ffmpeg output: {error}"));
+        }
+        if let Err(error) = deadline.check(token, "waveform job") {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
+        }
+        sleep(Duration::from_millis(20));
     }
 }
 

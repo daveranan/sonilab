@@ -87,11 +87,9 @@ jobs:
         include:
           - os: macos-15-intel
             target: x86_64-apple-darwin
-            arch: x86_64
             artifact: macos-intel
           - os: macos-15
             target: aarch64-apple-darwin
-            arch: arm64
             artifact: macos-arm64
     runs-on: ${{ matrix.os }}
 
@@ -130,99 +128,7 @@ jobs:
           cp "$ffmpeg_path" src-tauri/bin/ffmpeg
           chmod +x src-tauri/bin/ffmpeg
 
-          brew install cmake boost libmad libid3tag libsndfile gd zlib libpng flac libogg libvorbis opus lame mpg123
-          brew_prefix="$(brew --prefix)"
-          boost_prefix="$(brew --prefix boost)"
-          flac_prefix="$(brew --prefix flac)"
-          gd_prefix="$(brew --prefix gd)"
-          lame_prefix="$(brew --prefix lame)"
-          libsndfile_prefix="$(brew --prefix libsndfile)"
-          mpg123_prefix="$(brew --prefix mpg123)"
-          ogg_prefix="$(brew --prefix libogg)"
-          opus_prefix="$(brew --prefix opus)"
-          zlib_prefix="$(brew --prefix zlib)"
-          png_prefix="$(brew --prefix libpng)"
-          mad_prefix="$(brew --prefix mad 2>/dev/null || brew --prefix libmad)"
-          id3tag_prefix="$(brew --prefix libid3tag)"
-          vorbis_prefix="$(brew --prefix libvorbis)"
-          sdk_root="$(xcrun --sdk macosx --show-sdk-path)"
-          include_flags="-I$brew_prefix/include -I$zlib_prefix/include -I$png_prefix/include"
-          library_flags="-L$brew_prefix/lib -L$zlib_prefix/lib -L$png_prefix/lib"
-
-          export CPPFLAGS="$include_flags"
-          export CFLAGS="$include_flags"
-          export CXXFLAGS="$include_flags"
-          export LDFLAGS="$library_flags"
-          export PKG_CONFIG_PATH="$brew_prefix/lib/pkgconfig:$zlib_prefix/lib/pkgconfig:$png_prefix/lib/pkgconfig"
-
-          libgd_libs="$gd_prefix/lib/libgd.a;$png_prefix/lib/libpng.a;$zlib_prefix/lib/libz.a"
-          libsndfile_libs="$libsndfile_prefix/lib/libsndfile.a;$flac_prefix/lib/libFLAC.a;$vorbis_prefix/lib/libvorbis.a;$vorbis_prefix/lib/libvorbisenc.a;$ogg_prefix/lib/libogg.a;$opus_prefix/lib/libopus.a;$mpg123_prefix/lib/libmpg123.a;$lame_prefix/lib/libmp3lame.a"
-          libmad_library="$mad_prefix/lib/libmad.a"
-
-          if [ ! -f "$libmad_library" ]; then
-            libmad_build="$RUNNER_TEMP/libmad-static"
-            mkdir -p "$libmad_build/src" "$libmad_build/include" "$libmad_build/lib"
-            curl -L https://downloads.sourceforge.net/project/mad/libmad/0.15.1b/libmad-0.15.1b.tar.gz | tar -xz -C "$libmad_build/src" --strip-components 1
-            perl -0pi -e 's/\A/#include <stdlib.h>\n/' "$libmad_build/src/global.h"
-            cc -O3 -DFPM_DEFAULT -I"$libmad_build/src" -c \
-              "$libmad_build/src"/version.c \
-              "$libmad_build/src"/fixed.c \
-              "$libmad_build/src"/bit.c \
-              "$libmad_build/src"/timer.c \
-              "$libmad_build/src"/stream.c \
-              "$libmad_build/src"/frame.c \
-              "$libmad_build/src"/synth.c \
-              "$libmad_build/src"/decoder.c \
-              "$libmad_build/src"/layer12.c \
-              "$libmad_build/src"/layer3.c \
-              "$libmad_build/src"/huffman.c
-            libtool -static -o "$libmad_build/lib/libmad.a" ./*.o
-            cp "$libmad_build/src/mad.h" "$libmad_build/include/mad.h"
-            rm -f ./*.o
-            mad_prefix="$libmad_build"
-            libmad_library="$mad_prefix/lib/libmad.a"
-          fi
-
-          git clone --depth 1 --branch 1.10.3 https://github.com/bbc/audiowaveform "$RUNNER_TEMP/audiowaveform"
-          cmake -S "$RUNNER_TEMP/audiowaveform" -B "$RUNNER_TEMP/audiowaveform/build" \
-            -D CMAKE_BUILD_TYPE=Release \
-            -D ENABLE_TESTS=0 \
-            -D BUILD_STATIC=1 \
-            -D CMAKE_OSX_ARCHITECTURES=${{ matrix.arch }} \
-            -D CMAKE_OSX_SYSROOT="$sdk_root" \
-            -D CMAKE_PREFIX_PATH="$brew_prefix;$boost_prefix;$gd_prefix;$libsndfile_prefix;$flac_prefix;$vorbis_prefix;$ogg_prefix;$opus_prefix;$mpg123_prefix;$lame_prefix;$zlib_prefix;$png_prefix;$mad_prefix;$id3tag_prefix" \
-            -D BOOST_ROOT="$boost_prefix" \
-            -D Boost_ROOT="$boost_prefix" \
-            -D Boost_INCLUDE_DIR="$boost_prefix/include" \
-            -D ZLIB_ROOT="$zlib_prefix" \
-            -D ZLIB_INCLUDE_DIR="$zlib_prefix/include" \
-            -D ZLIB_LIBRARY="$zlib_prefix/lib/libz.a" \
-            -D PNG_ROOT="$png_prefix" \
-            -D PNG_PNG_INCLUDE_DIR="$png_prefix/include" \
-            -D PNG_LIBRARY="$png_prefix/lib/libpng.a" \
-            -D LIBGD_INCLUDE_DIRS="$gd_prefix/include" \
-            -D LIBGD_LIBRARIES="$libgd_libs" \
-            -D LIBSNDFILE_INCLUDE_DIRS="$libsndfile_prefix/include" \
-            -D LIBSNDFILE_LIBRARIES="$libsndfile_libs" \
-            -D LIBFLAC_INCLUDE_DIRS="$flac_prefix/include" \
-            -D LIBFLAC_LIBRARIES="$flac_prefix/lib/libFLAC.a" \
-            -D LIBVORBIS_INCLUDE_DIRS="$vorbis_prefix/include" \
-            -D LIBVORBIS_LIBRARY="$vorbis_prefix/lib/libvorbis.a" \
-            -D LIBVORBISENC_LIBRARY="$vorbis_prefix/lib/libvorbisenc.a" \
-            -D LIBOGG_INCLUDE_DIRS="$ogg_prefix/include" \
-            -D LIBOGG_LIBRARIES="$ogg_prefix/lib/libogg.a" \
-            -D LIBOPUS_INCLUDE_DIRS="$opus_prefix/include" \
-            -D LIBOPUS_LIBRARIES="$opus_prefix/lib/libopus.a" \
-            -D LIBMAD_INCLUDE_DIRS="$mad_prefix/include" \
-            -D LIBMAD_LIBRARIES="$libmad_library" \
-            -D LIBID3TAG_INCLUDE_DIRS="$id3tag_prefix/include" \
-            -D LIBID3TAG_LIBRARIES="$id3tag_prefix/lib/libid3tag.a"
-          cmake --build "$RUNNER_TEMP/audiowaveform/build" --parallel 3
-          cp "$RUNNER_TEMP/audiowaveform/build/audiowaveform" src-tauri/bin/audiowaveform
-          chmod +x src-tauri/bin/audiowaveform
-
           src-tauri/bin/ffmpeg -version
-          src-tauri/bin/audiowaveform --version
 
       - name: Build macOS package
         run: npm run typecheck && node scripts/bump-build-version.mjs && npm run tauri -- build --target ${{ matrix.target }} --bundles dmg
