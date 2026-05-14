@@ -87,9 +87,11 @@ jobs:
         include:
           - os: macos-15-intel
             target: x86_64-apple-darwin
+            arch: x86_64
             artifact: macos-intel
           - os: macos-15
             target: aarch64-apple-darwin
+            arch: arm64
             artifact: macos-arm64
     runs-on: ${{ matrix.os }}
 
@@ -128,12 +130,20 @@ jobs:
           cp "$ffmpeg_path" src-tauri/bin/ffmpeg
           chmod +x src-tauri/bin/ffmpeg
 
-          brew install cmake boost libmad libid3tag libsndfile gd
+          brew install cmake boost libmad libid3tag libsndfile gd zlib libpng
+          brew_prefix="$(brew --prefix)"
+          zlib_prefix="$(brew --prefix zlib)"
+          png_prefix="$(brew --prefix libpng)"
+
           git clone --depth 1 --branch 1.10.3 https://github.com/bbc/audiowaveform "$RUNNER_TEMP/audiowaveform"
           cmake -S "$RUNNER_TEMP/audiowaveform" -B "$RUNNER_TEMP/audiowaveform/build" \
             -D CMAKE_BUILD_TYPE=Release \
             -D ENABLE_TESTS=0 \
-            -D BUILD_STATIC=1
+            -D BUILD_STATIC=1 \
+            -D CMAKE_OSX_ARCHITECTURES=${{ matrix.arch }} \
+            -D CMAKE_PREFIX_PATH="$brew_prefix;$zlib_prefix;$png_prefix" \
+            -D ZLIB_ROOT="$zlib_prefix" \
+            -D PNG_ROOT="$png_prefix"
           cmake --build "$RUNNER_TEMP/audiowaveform/build" --parallel 3
           cp "$RUNNER_TEMP/audiowaveform/build/audiowaveform" src-tauri/bin/audiowaveform
           chmod +x src-tauri/bin/audiowaveform
