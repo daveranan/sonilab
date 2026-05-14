@@ -157,6 +157,30 @@ jobs:
 
           libgd_libs="$gd_prefix/lib/libgd.a;$png_prefix/lib/libpng.a;$zlib_prefix/lib/libz.a"
           libsndfile_libs="$libsndfile_prefix/lib/libsndfile.a;$flac_prefix/lib/libFLAC.a;$vorbis_prefix/lib/libvorbis.a;$vorbis_prefix/lib/libvorbisenc.a;$ogg_prefix/lib/libogg.a;$opus_prefix/lib/libopus.a;$mpg123_prefix/lib/libmpg123.a;$lame_prefix/lib/libmp3lame.a"
+          libmad_library="$mad_prefix/lib/libmad.a"
+
+          if [ ! -f "$libmad_library" ]; then
+            libmad_build="$RUNNER_TEMP/libmad-static"
+            mkdir -p "$libmad_build/src" "$libmad_build/include" "$libmad_build/lib"
+            curl -L https://downloads.sourceforge.net/project/mad/libmad/0.15.1b/libmad-0.15.1b.tar.gz | tar -xz -C "$libmad_build/src" --strip-components 1
+            cc -O3 -DFPM_DEFAULT -I"$libmad_build/src" -c \
+              "$libmad_build/src"/version.c \
+              "$libmad_build/src"/fixed.c \
+              "$libmad_build/src"/bit.c \
+              "$libmad_build/src"/timer.c \
+              "$libmad_build/src"/stream.c \
+              "$libmad_build/src"/frame.c \
+              "$libmad_build/src"/synth.c \
+              "$libmad_build/src"/decoder.c \
+              "$libmad_build/src"/layer12.c \
+              "$libmad_build/src"/layer3.c \
+              "$libmad_build/src"/huffman.c
+            libtool -static -o "$libmad_build/lib/libmad.a" ./*.o
+            cp "$libmad_build/src/mad.h" "$libmad_build/include/mad.h"
+            rm -f ./*.o
+            mad_prefix="$libmad_build"
+            libmad_library="$mad_prefix/lib/libmad.a"
+          fi
 
           git clone --depth 1 --branch 1.10.3 https://github.com/bbc/audiowaveform "$RUNNER_TEMP/audiowaveform"
           cmake -S "$RUNNER_TEMP/audiowaveform" -B "$RUNNER_TEMP/audiowaveform/build" \
@@ -189,7 +213,7 @@ jobs:
             -D LIBOPUS_INCLUDE_DIRS="$opus_prefix/include" \
             -D LIBOPUS_LIBRARIES="$opus_prefix/lib/libopus.a" \
             -D LIBMAD_INCLUDE_DIRS="$mad_prefix/include" \
-            -D LIBMAD_LIBRARIES="$mad_prefix/lib/libmad.a" \
+            -D LIBMAD_LIBRARIES="$libmad_library" \
             -D LIBID3TAG_INCLUDE_DIRS="$id3tag_prefix/include" \
             -D LIBID3TAG_LIBRARIES="$id3tag_prefix/lib/libid3tag.a"
           cmake --build "$RUNNER_TEMP/audiowaveform/build" --parallel 3
