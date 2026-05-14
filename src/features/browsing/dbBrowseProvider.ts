@@ -146,6 +146,28 @@ function buildBackendQuery(request: BrowseRequest): string | undefined {
   const tagAny = query.filters.find(
     (filter) => filter.field === "tagany" && !filter.negated,
   );
+  const userTagAny = query.filters.find(
+    (filter) => filter.field === "usertagany" && !filter.negated,
+  );
+  const userTag = query.filters.find(
+    (filter) => filter.field === "usertag" && !filter.negated,
+  );
+  if (
+    userTagAny &&
+    typeof userTagAny.value === "string" &&
+    query.text.length === 0 &&
+    query.filters.length === 1
+  ) {
+    return `__user_tag_any__:${userTagAny.value}`;
+  }
+  if (
+    userTag &&
+    typeof userTag.value === "string" &&
+    query.text.length === 0 &&
+    query.filters.length === 1
+  ) {
+    return `__user_tag__:${userTag.value}`;
+  }
   if (
     tagAny &&
     typeof tagAny.value === "string" &&
@@ -168,6 +190,8 @@ function filterToBackendTerms(filter: SearchFilter): string[] {
   if (
     filter.field === "tag" ||
     filter.field === "tagany" ||
+    filter.field === "usertag" ||
+    filter.field === "usertagany" ||
     filter.field === "license" ||
     filter.field === "rights" ||
     filter.field === "format" ||

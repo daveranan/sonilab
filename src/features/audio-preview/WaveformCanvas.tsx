@@ -3,9 +3,13 @@ import type React from "react";
 
 import {
   cancelAudioJob,
+  deleteRegionNote,
   getCachedWaveformPeakRange,
   getCachedWaveformPeaks,
   getWaveformPeaks,
+  listRegionNotes,
+  upsertRegionNote,
+  type RegionNote,
 } from "./commands";
 import { processedGain } from "./audioMath";
 import { audioPreviewService, type OutputMeterSnapshot } from "./previewService";
@@ -58,6 +62,18 @@ type RegionFadeSettings = {
   fadeOutSeconds: number;
   fadeInSlope?: number;
   fadeOutSlope?: number;
+};
+
+type NoteEditorState = {
+  note: RegionNote | null;
+  region: WaveformRegion;
+  comment: string;
+};
+
+type NoteMenuState = {
+  note: RegionNote;
+  x: number;
+  y: number;
 };
 
 type DragState = {
@@ -198,6 +214,14 @@ export function WaveformCanvas({
   const [activeChannelIndexes, setActiveChannelIndexes] = useState<number[]>([]);
   const [horizontalZoomValue, setHorizontalZoomValue] = useState(1);
   const [verticalZoomValue, setVerticalZoomValue] = useState(1);
+  const [regionNotes, setRegionNotes] = useState<RegionNote[]>([]);
+  const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
+  const [noteEditor, setNoteEditor] = useState<NoteEditorState | null>(null);
+  const [noteMenu, setNoteMenu] = useState<NoteMenuState | null>(null);
+  const [noteLayout, setNoteLayout] = useState(() => ({
+    width: 1,
+    viewport: fitViewport(1, 1),
+  }));
   const [playheadAnimating, setPlayheadAnimating] = useState(
     () => audioPreviewService.getState().status === "playing",
   );
@@ -383,6 +407,15 @@ export function WaveformCanvas({
     });
   }, []);
 
+  const refreshNoteLayout = useCallback(() => {
+    const rect = canvasRef.current?.getBoundingClientRect();
+    const viewport = viewportRef.current;
+    setNoteLayout({
+      width: rect?.width ?? 1,
+      viewport: { ...viewport },
+    });
+  }, []);
+
   const zoomHorizontal = useCallback(
     (factor: number) => {
       const peaks = peakDataRef.current;
@@ -403,8 +436,9 @@ export function WaveformCanvas({
       );
       syncZoomLabels();
       redraw();
+      refreshNoteLayout();
     },
-    [redraw, syncZoomLabels],
+    [redraw, refreshNoteLayout, syncZoomLabels],
   );
 
   const zoomVertical = useCallback(
@@ -440,8 +474,9 @@ export function WaveformCanvas({
       setHorizontalZoomValue(nextZoom);
       syncZoomLabels();
       redraw();
+      refreshNoteLayout();
     },
-    [redraw, syncZoomLabels],
+    [redraw, refreshNoteLayout, syncZoomLabels],
   );
 
   const setVerticalZoomLevel = useCallback(
@@ -628,17 +663,49 @@ export function WaveformCanvas({
       }
       syncZoomLabels();
       redraw();
+      refreshNoteLayout();
       scheduleWaveformResolution();
     };
     canvas.addEventListener("wheel", handleWheel, { passive: false });
     return () => canvas.removeEventListener("wheel", handleWheel);
-  }, [redraw, scheduleWaveformResolution, syncZoomLabels]);
+  }, [redraw, refreshNoteLayout, scheduleWaveformResolution, syncZoomLabels]);
 
   useEffect(() => {
     regionRef.current = region;
     if (!region) committedRegionKeyRef.current = null;
     redraw();
   }, [redraw, region]);
+
+  useEffect(() => {
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
+      setSelectedNoteId(null);
+      setNoteMenu(null);
+      setNoteEditor(null);
+    });
+    if (!assetId) {
+      queueMicrotask(() => {
+        if (!cancelled) setRegionNotes([]);
+      });
+      return () => {
+        cancelled = true;
+      };
+    }
+    void listRegionNotes(assetId)
+      .then((notes) => {
+        if (!cancelled) {
+          setRegionNotes(notes);
+          refreshNoteLayout();
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setRegionNotes([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [assetId, refreshNoteLayout]);
 
   useEffect(() => {
     let cancelled = false;
@@ -783,14 +850,7 @@ export function WaveformCanvas({
         activeWaveformJobRef.current = null;
       }
     };
-  }, [
-    assetId,
-    applyPeakData,
-    contentKey,
-    durationSeconds,
-    redraw,
-    sampleRate,
-  ]);
+  }, [assetId, applyPeakData, contentKey, durationSeconds, redraw, sampleRate]);
 
   useEffect(
     () =>
@@ -1086,6 +1146,103 @@ export function WaveformCanvas({
     });
   }, []);
 
+  const selectRegionNote = useCallback(
+    (note: RegionNote) => {
+      const nextRegion = {
+        startSeconds: note.startSeconds,
+        endSeconds: note.endSeconds,
+      };
+      setSelectedNoteId(note.id);
+      setNoteMenu(null);
+      committedRegionKeyRef.current = regionKey(nextRegion);
+      onRegionChange(nextRegion);
+      onRegionCommit(nextRegion);
+    },
+    [onRegionChange, onRegionCommit],
+  );
+
+  const openNoteEditor = useCallback(
+    (note?: RegionNote | null) => {
+      const sourceRegion = note
+        ? { startSeconds: note.startSeconds, endSeconds: note.endSeconds }
+        : regionRef.current;
+      if (!assetId || !sourceRegion) return;
+      setNoteMenu(null);
+      setNoteEditor({
+        note: note ?? null,
+        region: sourceRegion,
+        comment: note?.comment ?? "",
+      });
+    },
+    [assetId],
+  );
+
+  const saveNoteEditor = useCallback(() => {
+    if (!assetId || !noteEditor) return;
+    void upsertRegionNote({
+      id: noteEditor.note?.id ?? null,
+      assetId,
+      startSeconds: noteEditor.region.startSeconds,
+      endSeconds: noteEditor.region.endSeconds,
+      comment: noteEditor.comment,
+    }).then((saved) => {
+      setRegionNotes((current) => {
+        const existing = current.some((note) => note.id === saved.id);
+        const next = existing
+          ? current.map((note) => (note.id === saved.id ? saved : note))
+          : [...current, saved];
+        return next.sort(
+          (left, right) =>
+            left.startSeconds - right.startSeconds || left.id.localeCompare(right.id),
+        );
+      });
+      setSelectedNoteId(saved.id);
+      setNoteEditor(null);
+      refreshNoteLayout();
+    });
+  }, [assetId, noteEditor, refreshNoteLayout]);
+
+  const removeRegionNote = useCallback((note: RegionNote) => {
+    void deleteRegionNote(note.id).then(() => {
+      setRegionNotes((current) =>
+        current.filter((candidate) => candidate.id !== note.id),
+      );
+      setSelectedNoteId((current) => (current === note.id ? null : current));
+      setNoteMenu(null);
+    });
+  }, []);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (ignoresNoteShortcut(event.target)) return;
+      if (event.key.toLowerCase() === "n" && regionRef.current && assetId) {
+        event.preventDefault();
+        openNoteEditor();
+      }
+      if (event.key === "Delete" && selectedNoteId) {
+        const selected = regionNotes.find((note) => note.id === selectedNoteId);
+        if (selected) {
+          event.preventDefault();
+          removeRegionNote(selected);
+        }
+      }
+      if (event.key === "Escape") {
+        setNoteMenu(null);
+        setNoteEditor(null);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown, true);
+    return () => window.removeEventListener("keydown", handleKeyDown, true);
+  }, [assetId, openNoteEditor, regionNotes, removeRegionNote, selectedNoteId]);
+
+  const noteCanvasWidth = noteLayout.width;
+  const noteViewport = noteLayout.viewport;
+  const visibleNotes = regionNotes.filter(
+    (note) =>
+      note.endSeconds >= noteViewport.visibleStartSeconds &&
+      note.startSeconds <= noteViewport.visibleEndSeconds,
+  );
+
   return (
     <div className="relative h-full bg-black">
       <canvas
@@ -1122,6 +1279,8 @@ export function WaveformCanvas({
         onPointerDown={(event) => {
           const isMiddlePan = event.button === 1;
           if (event.button !== 0 && !isMiddlePan) return;
+          setSelectedNoteId(null);
+          setNoteMenu(null);
           if (isMiddlePan) event.preventDefault();
           const rect = event.currentTarget.getBoundingClientRect();
           const x = event.clientX - rect.left;
@@ -1237,6 +1396,7 @@ export function WaveformCanvas({
                 drag.currentX - nextX,
               );
               scheduleWaveformResolution();
+              refreshNoteLayout();
             }
           } else if (drag.mode === "resize-start" && drag.regionAtStart) {
             onRegionChange(
@@ -1481,6 +1641,130 @@ export function WaveformCanvas({
             : "Waveform"
         }
       />
+      <div className="pointer-events-none absolute inset-0">
+        {visibleNotes.map((note) => {
+          const left = secondsToX(note.startSeconds, noteViewport, noteCanvasWidth);
+          const selected = selectedNoteId === note.id;
+          return (
+            <button
+              className={[
+                "group pointer-events-auto absolute bottom-8 flex h-6 items-center gap-1 overflow-hidden rounded-sm border px-1 text-[11px] shadow-lg transition-[width,background-color,color,border-color] duration-150 focus:w-max",
+                selected
+                  ? "w-max border-amber-200 bg-amber-300 text-black"
+                  : "w-6 border-amber-300/70 bg-black/80 text-amber-100 hover:w-max hover:bg-amber-300 hover:text-black",
+              ].join(" ")}
+              key={note.id}
+              onClick={() => selectRegionNote(note)}
+              onContextMenu={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                setNoteMenu({ note, x: event.clientX, y: event.clientY });
+              }}
+              onDoubleClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                selectRegionNote(note);
+                openNoteEditor(note);
+              }}
+              style={{
+                left: `${Math.max(3, Math.min(noteCanvasWidth - 24, left))}px`,
+              }}
+              title={note.comment}
+              type="button"
+            >
+              <span className="grid size-4 shrink-0 place-items-center rounded-full border border-current text-[10px]">
+                N
+              </span>
+              <span
+                className={[
+                  "whitespace-nowrap transition-opacity duration-150 group-hover:opacity-100 group-focus:opacity-100",
+                  selected ? "opacity-100" : "opacity-0",
+                ].join(" ")}
+              >
+                {note.comment}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+      {noteMenu ? (
+        <div
+          className="fixed z-50 min-w-32 border border-border bg-panel p-1 text-[12px] text-foreground shadow-lg"
+          style={{ left: noteMenu.x, top: noteMenu.y }}
+        >
+          <button
+            className="block h-7 w-full px-2 text-left hover:bg-muted"
+            onClick={() => {
+              selectRegionNote(noteMenu.note);
+              openNoteEditor(noteMenu.note);
+            }}
+            type="button"
+          >
+            Edit
+          </button>
+          <button
+            className="block h-7 w-full px-2 text-left text-destructive hover:bg-muted"
+            onClick={() => removeRegionNote(noteMenu.note)}
+            type="button"
+          >
+            Delete
+          </button>
+        </div>
+      ) : null}
+      {noteEditor ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+          <section className="w-[min(420px,calc(100vw-32px))] rounded-md border border-border bg-panel p-3 shadow-2xl">
+            <div className="mb-2 flex items-center justify-between">
+              <div className="text-[13px] font-semibold text-foreground">
+                Region Note
+              </div>
+              <button
+                className="size-7 rounded-sm text-muted-foreground hover:bg-muted hover:text-foreground"
+                onClick={() => setNoteEditor(null)}
+                type="button"
+              >
+                x
+              </button>
+            </div>
+            <div className="mb-2 font-mono text-[11px] text-muted-foreground">
+              <WaveformTimecode seconds={noteEditor.region.startSeconds} /> -{" "}
+              <WaveformTimecode seconds={noteEditor.region.endSeconds} />
+            </div>
+            <textarea
+              autoFocus
+              className="h-28 w-full resize-none rounded-sm border border-input bg-background p-2 text-[12px] text-foreground outline-none focus-visible:border-primary"
+              onChange={(event) =>
+                setNoteEditor((current) =>
+                  current ? { ...current, comment: event.target.value } : current,
+                )
+              }
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+                  saveNoteEditor();
+                }
+              }}
+              value={noteEditor.comment}
+            />
+            <div className="mt-3 flex justify-end gap-2">
+              <button
+                className="h-8 rounded-sm px-3 text-[12px] text-muted-foreground hover:bg-muted hover:text-foreground"
+                onClick={() => setNoteEditor(null)}
+                type="button"
+              >
+                Cancel
+              </button>
+              <button
+                className="h-8 rounded-sm bg-primary px-3 text-[12px] font-medium text-primary-foreground disabled:opacity-50"
+                disabled={!noteEditor.comment.trim()}
+                onClick={saveNoteEditor}
+                type="button"
+              >
+                Save
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
       <div className="absolute right-4 top-2 rounded-[2px] bg-black/35 px-1.5 py-0.5">
         <input
           aria-label="Horizontal waveform zoom"
@@ -2067,6 +2351,19 @@ function WaveformTimecode({ seconds }: { seconds: number }) {
 
 function formatMilliseconds(seconds: number): string {
   return `${Math.round(seconds * 1000)}ms`;
+}
+
+function ignoresNoteShortcut(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.isContentEditable) return true;
+  const tagName = target.tagName.toLowerCase();
+  if (tagName === "textarea" || tagName === "select") return true;
+  if (target instanceof HTMLInputElement) {
+    return ["text", "search", "url", "email", "password", "tel", "number"].includes(
+      target.type,
+    );
+  }
+  return false;
 }
 
 function committedRegionFromDrag(

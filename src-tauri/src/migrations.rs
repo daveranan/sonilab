@@ -38,6 +38,12 @@ const MIGRATIONS: &[Migration] = &[
         up_sql: include_str!("../migrations/004_waveform_peak_files.up.sql"),
         down_sql: include_str!("../migrations/004_waveform_peak_files.down.sql"),
     },
+    Migration {
+        version: 5,
+        name: "user_annotations",
+        up_sql: include_str!("../migrations/005_user_annotations.up.sql"),
+        down_sql: include_str!("../migrations/005_user_annotations.down.sql"),
+    },
 ];
 
 #[derive(Serialize)]

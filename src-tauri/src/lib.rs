@@ -122,6 +122,27 @@ struct TagSummaryRequest {
 struct TagSummaryRow {
     tag: String,
     count: i64,
+    source: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AssetUserMetadata {
+    asset_id: String,
+    user_tags: Vec<String>,
+    user_comment: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RegionNote {
+    id: String,
+    asset_id: String,
+    start_seconds: f64,
+    end_seconds: f64,
+    comment: String,
+    created_at: String,
+    updated_at: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -448,6 +469,210 @@ fn asset_tags(app: AppHandle, asset_id: String) -> Result<Vec<String>, String> {
 }
 
 #[tauri::command]
+fn asset_user_metadata(app: AppHandle, asset_id: String) -> Result<AssetUserMetadata, String> {
+    apply_migrations(&app)?;
+    let path = migrations::app_database_path(&app)?;
+    let connection = Connection::open(path).map_err(|error| error.to_string())?;
+    let user_comment = connection
+        .query_row(
+            "SELECT comment FROM asset_user_metadata WHERE asset_id = ?1",
+            params![&asset_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?
+        .unwrap_or_default();
+    let user_tags = read_asset_user_tags(&connection, &asset_id)?;
+    Ok(AssetUserMetadata {
+        asset_id,
+        user_tags,
+        user_comment,
+    })
+}
+
+#[tauri::command]
+fn update_asset_user_metadata(
+    app: AppHandle,
+    asset_id: String,
+    user_tags: Vec<String>,
+    user_comment: String,
+) -> Result<AssetUserMetadata, String> {
+    apply_migrations(&app)?;
+    let path = migrations::app_database_path(&app)?;
+    let connection = Connection::open(path).map_err(|error| error.to_string())?;
+    connection
+        .execute(
+            "INSERT INTO asset_user_metadata (asset_id, comment, updated_at)
+             VALUES (?1, ?2, CURRENT_TIMESTAMP)
+             ON CONFLICT(asset_id) DO UPDATE SET
+                comment = excluded.comment,
+                updated_at = CURRENT_TIMESTAMP",
+            params![&asset_id, user_comment.trim()],
+        )
+        .map_err(|error| error.to_string())?;
+    connection
+        .execute(
+            "DELETE FROM asset_user_tags WHERE asset_id = ?1",
+            params![&asset_id],
+        )
+        .map_err(|error| error.to_string())?;
+
+    let mut normalized_tags = user_tags
+        .iter()
+        .filter_map(|tag| normalize_user_tag(tag))
+        .collect::<Vec<_>>();
+    normalized_tags.sort();
+    normalized_tags.dedup();
+    {
+        let mut insert = connection
+            .prepare("INSERT OR IGNORE INTO asset_user_tags (asset_id, tag) VALUES (?1, ?2)")
+            .map_err(|error| error.to_string())?;
+        for tag in &normalized_tags {
+            insert
+                .execute(params![&asset_id, tag])
+                .map_err(|error| error.to_string())?;
+        }
+    }
+    DataRepository::new(connection)?.index_asset_for_search(&asset_id)?;
+
+    Ok(AssetUserMetadata {
+        asset_id,
+        user_tags: normalized_tags,
+        user_comment: user_comment.trim().to_string(),
+    })
+}
+
+#[tauri::command]
+fn list_region_notes(app: AppHandle, asset_id: String) -> Result<Vec<RegionNote>, String> {
+    apply_migrations(&app)?;
+    let path = migrations::app_database_path(&app)?;
+    let connection = Connection::open(path).map_err(|error| error.to_string())?;
+    read_region_notes(&connection, &asset_id)
+}
+
+#[tauri::command]
+fn upsert_region_note(
+    app: AppHandle,
+    id: Option<String>,
+    asset_id: String,
+    start_seconds: f64,
+    end_seconds: f64,
+    comment: String,
+) -> Result<RegionNote, String> {
+    if end_seconds <= start_seconds {
+        return Err("Region note end must be after start.".to_string());
+    }
+    let trimmed = comment.trim();
+    if trimmed.is_empty() {
+        return Err("Region note comment is required.".to_string());
+    }
+    apply_migrations(&app)?;
+    let path = migrations::app_database_path(&app)?;
+    let connection = Connection::open(path).map_err(|error| error.to_string())?;
+    let note_id = id
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| format!("region-note-{}-{}", asset_id, now_millis()));
+    connection
+        .execute(
+            "INSERT INTO asset_region_notes (
+                id, asset_id, start_seconds, end_seconds, comment, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, CURRENT_TIMESTAMP)
+             ON CONFLICT(id) DO UPDATE SET
+                start_seconds = excluded.start_seconds,
+                end_seconds = excluded.end_seconds,
+                comment = excluded.comment,
+                updated_at = CURRENT_TIMESTAMP",
+            params![&note_id, &asset_id, start_seconds, end_seconds, trimmed],
+        )
+        .map_err(|error| error.to_string())?;
+    read_region_note(&connection, &note_id)
+}
+
+#[tauri::command]
+fn delete_region_note(app: AppHandle, id: String) -> Result<bool, String> {
+    apply_migrations(&app)?;
+    let path = migrations::app_database_path(&app)?;
+    let connection = Connection::open(path).map_err(|error| error.to_string())?;
+    let changed = connection
+        .execute("DELETE FROM asset_region_notes WHERE id = ?1", params![id])
+        .map_err(|error| error.to_string())?;
+    Ok(changed > 0)
+}
+
+fn read_asset_user_tags(connection: &Connection, asset_id: &str) -> Result<Vec<String>, String> {
+    let mut statement = connection
+        .prepare("SELECT tag FROM asset_user_tags WHERE asset_id = ?1 ORDER BY tag")
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map(params![asset_id], |row| row.get::<_, String>(0))
+        .map_err(|error| error.to_string())?;
+    let mut tags = Vec::new();
+    for row in rows {
+        tags.push(row.map_err(|error| error.to_string())?);
+    }
+    Ok(tags)
+}
+
+fn read_region_notes(connection: &Connection, asset_id: &str) -> Result<Vec<RegionNote>, String> {
+    let mut statement = connection
+        .prepare(
+            "SELECT id, asset_id, start_seconds, end_seconds, comment, created_at, updated_at
+             FROM asset_region_notes
+             WHERE asset_id = ?1
+             ORDER BY start_seconds, id",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map(params![asset_id], region_note_from_row)
+        .map_err(|error| error.to_string())?;
+    let mut notes = Vec::new();
+    for row in rows {
+        notes.push(row.map_err(|error| error.to_string())?);
+    }
+    Ok(notes)
+}
+
+fn read_region_note(connection: &Connection, id: &str) -> Result<RegionNote, String> {
+    connection
+        .query_row(
+            "SELECT id, asset_id, start_seconds, end_seconds, comment, created_at, updated_at
+             FROM asset_region_notes
+             WHERE id = ?1",
+            params![id],
+            region_note_from_row,
+        )
+        .map_err(|error| error.to_string())
+}
+
+fn region_note_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RegionNote> {
+    Ok(RegionNote {
+        id: row.get(0)?,
+        asset_id: row.get(1)?,
+        start_seconds: row.get(2)?,
+        end_seconds: row.get(3)?,
+        comment: row.get(4)?,
+        created_at: row.get(5)?,
+        updated_at: row.get(6)?,
+    })
+}
+
+fn now_millis() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0)
+}
+
+fn normalize_user_tag(tag: &str) -> Option<String> {
+    if let Some((category, label)) = tag.split_once(':') {
+        let category = canonicalize_tag(category)?;
+        let label = canonicalize_tag(label)?;
+        return Some(format!("{category}:{label}"));
+    }
+    canonicalize_tag(tag)
+}
+
+#[tauri::command]
 fn rebuild_asset_search_index(app: AppHandle) -> Result<usize, String> {
     data_repository(&app)?.rebuild_asset_search_index()
 }
@@ -588,14 +813,30 @@ fn tag_summary(app: AppHandle, request: TagSummaryRequest) -> Result<Vec<TagSumm
         .collect::<Vec<_>>()
         .join(",");
     let sql = format!(
-        "SELECT t.tag, COUNT(*) AS tag_count
-         FROM asset_tags AS t
-         JOIN assets AS a ON a.id = t.asset_id
-         WHERE a.source_id IN ({placeholders})
-           AND a.availability = 'available'
-         GROUP BY t.tag
-         ORDER BY tag_count DESC, t.tag
-         LIMIT ?"
+        "WITH tag_counts AS (
+            SELECT t.tag, COUNT(*) AS tag_count, t.source
+            FROM (
+                SELECT asset_id, tag, 'local' AS source FROM asset_tags
+                UNION
+                SELECT asset_id, tag, 'user' AS source FROM asset_user_tags
+            ) AS t
+            JOIN assets AS a ON a.id = t.asset_id
+            WHERE a.source_id IN ({placeholders})
+              AND a.availability = 'available'
+            GROUP BY t.source, t.tag
+         ),
+         ranked_tags AS (
+            SELECT tag, tag_count, source,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY source
+                       ORDER BY tag_count DESC, tag
+                   ) AS source_rank
+            FROM tag_counts
+         )
+         SELECT tag, tag_count, source
+         FROM ranked_tags
+         WHERE source_rank <= ?
+         ORDER BY CASE source WHEN 'user' THEN 0 ELSE 1 END, tag_count DESC, tag"
     );
     let mut query_params = source_ids;
     query_params.push(limit.to_string());
@@ -608,6 +849,7 @@ fn tag_summary(app: AppHandle, request: TagSummaryRequest) -> Result<Vec<TagSumm
             Ok(TagSummaryRow {
                 tag: row.get(0)?,
                 count: row.get(1)?,
+                source: row.get(2)?,
             })
         })
         .map_err(|error| error.to_string())?;
@@ -2278,6 +2520,12 @@ fn search_asset_ids(
     if let Some(tag_query) = query.strip_prefix("__tag_any__:") {
         return search_asset_ids_by_any_tag(connection, tag_query, limit);
     }
+    if let Some(tag_query) = query.strip_prefix("__user_tag_any__:") {
+        return search_asset_ids_by_user_tag(connection, tag_query, limit);
+    }
+    if let Some(tag_query) = query.strip_prefix("__user_tag__:") {
+        return search_asset_ids_by_user_tag(connection, tag_query, limit);
+    }
 
     let mut statement = connection
         .prepare(
@@ -2298,15 +2546,17 @@ fn search_asset_ids(
     Ok(ids)
 }
 
-fn search_asset_ids_by_any_tag(
+fn search_asset_ids_by_user_tag(
     connection: &Connection,
     tag_query: &str,
     limit: i64,
 ) -> Result<Vec<String>, String> {
-    let tags = tag_query
+    let mut tags = tag_query
         .split('|')
-        .filter_map(canonicalize_tag)
+        .filter_map(normalize_user_tag)
         .collect::<Vec<_>>();
+    tags.sort();
+    tags.dedup();
     if tags.is_empty() {
         return Ok(Vec::new());
     }
@@ -2316,7 +2566,55 @@ fn search_asset_ids_by_any_tag(
         .join(",");
     let sql = format!(
         "SELECT asset_id
-         FROM asset_tags
+         FROM asset_user_tags
+         WHERE tag IN ({placeholders})
+         GROUP BY asset_id
+         ORDER BY asset_id
+         LIMIT ?"
+    );
+    let mut params = tags;
+    params.push(limit.to_string());
+    let mut statement = connection
+        .prepare(&sql)
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map(params_from_iter(params.iter()), |row| {
+            row.get::<_, String>(0)
+        })
+        .map_err(|error| error.to_string())?;
+    let mut ids = Vec::new();
+    for row in rows {
+        ids.push(row.map_err(|error| error.to_string())?);
+    }
+    Ok(ids)
+}
+
+fn search_asset_ids_by_any_tag(
+    connection: &Connection,
+    tag_query: &str,
+    limit: i64,
+) -> Result<Vec<String>, String> {
+    let mut tags = tag_query
+        .split('|')
+        .flat_map(|tag| [canonicalize_tag(tag), normalize_user_tag(tag)])
+        .flatten()
+        .collect::<Vec<_>>();
+    tags.sort();
+    tags.dedup();
+    if tags.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = std::iter::repeat("?")
+        .take(tags.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "SELECT asset_id
+         FROM (
+            SELECT asset_id, tag FROM asset_tags
+            UNION
+            SELECT asset_id, tag FROM asset_user_tags
+         )
          WHERE tag IN ({placeholders})
          GROUP BY asset_id
          ORDER BY asset_id
@@ -2350,7 +2648,14 @@ fn asset_browse_sql(predicate: &str) -> String {
                 s.display_name, s.provider, a.path_or_url, a.license,
                 s.settings_json, a.originator, a.attribution, a.description,
                 COALESCE(
-                    (SELECT json_group_array(tag) FROM asset_tags WHERE asset_id = a.id),
+                    (
+                        SELECT json_group_array(tag)
+                        FROM (
+                            SELECT tag FROM asset_tags WHERE asset_id = a.id
+                            UNION
+                            SELECT tag FROM asset_user_tags WHERE asset_id = a.id
+                        )
+                    ),
                     '[]'
                 ) AS tags_json,
                 a.availability, COALESCE(facet.favorite, 0), f.path, a.metadata_json
@@ -2854,6 +3159,11 @@ pub fn run() {
             upsert_asset,
             get_asset_by_stable_key,
             asset_tags,
+            asset_user_metadata,
+            update_asset_user_metadata,
+            list_region_notes,
+            upsert_region_note,
+            delete_region_note,
             rebuild_asset_search_index,
             search_assets,
             browse_database,

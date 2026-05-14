@@ -10,6 +10,8 @@ import { defaultSearchSort } from "./sortModel";
 const filterFields = new Set<SearchFilterField>([
   "tag",
   "tagany",
+  "usertag",
+  "usertagany",
   "license",
   "rights",
   "duration",

@@ -948,6 +948,9 @@ impl DataRepository {
             .map_err(|error| error.to_string())?;
 
         document.tags = self.asset_tags(&document.asset_id)?;
+        document.tags.extend(self.asset_user_tags(&document.asset_id)?);
+        document.tags.sort();
+        document.tags.dedup();
         document.collection_names = self.collection_names_for_asset(&document.asset_id)?;
         if document
             .collection_names
@@ -958,6 +961,22 @@ impl DataRepository {
         }
         document.waveform_cached = self.waveform_cached_for_asset(&document.asset_id)?;
         Ok(document)
+    }
+
+    fn asset_user_tags(&self, asset_id: &str) -> Result<Vec<String>, String> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT tag FROM asset_user_tags WHERE asset_id = ?1 ORDER BY tag")
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map(params![asset_id], |row| row.get::<_, String>(0))
+            .map_err(|error| error.to_string())?;
+
+        let mut tags = Vec::new();
+        for row in rows {
+            tags.push(row.map_err(|error| error.to_string())?);
+        }
+        Ok(tags)
     }
 
     fn collection_names_for_asset(&self, asset_id: &str) -> Result<Vec<String>, String> {
@@ -1648,6 +1667,9 @@ mod tests {
         connection
             .execute_batch(include_str!("../migrations/002_search_index.up.sql"))
             .expect("apply search index migration");
+        connection
+            .execute_batch(include_str!("../migrations/005_user_annotations.up.sql"))
+            .expect("apply user annotations migration");
         DataRepository::new(connection).expect("create data repository")
     }
 

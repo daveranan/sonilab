@@ -15,6 +15,7 @@ export type LibraryNode = {
   analyzeForFindSimilar?: boolean;
   metadataFile?: string | null;
   queryText?: string;
+  queryTag?: string;
   children?: LibraryNode[];
 };
 

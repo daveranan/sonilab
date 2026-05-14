@@ -36,6 +36,11 @@ const fieldDescriptors: SearchFieldDescriptor[] = [
     values: tagSuggestionValues,
   },
   {
+    field: "usertag",
+    detail: "Match a user tag",
+    values: [],
+  },
+  {
     field: "license",
     detail: "Match normalized license",
     values: ["cc0", "by", "by-nc", "unknown"],

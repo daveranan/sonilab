@@ -7,6 +7,8 @@ export type SourceScope =
 export type SearchFilterField =
   | "tag"
   | "tagany"
+  | "usertag"
+  | "usertagany"
   | "license"
   | "rights"
   | "duration"

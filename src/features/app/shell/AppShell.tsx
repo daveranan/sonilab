@@ -131,6 +131,7 @@ type FolderRecord = {
 type TagSummaryRow = {
   tag: string;
   count: number;
+  source?: "local" | "user";
 };
 
 type LocalFolderRegistration = {
@@ -633,6 +634,7 @@ function sortTagNodes(nodes: LibraryNode[]): LibraryNode[] {
 }
 
 function descendantTagLabels(node: LibraryNode): string[] {
+  if (node.kind === "query" && node.queryTag) return [node.queryTag];
   if (node.kind === "query" && node.label) return [node.label];
   return (node.children ?? []).flatMap(descendantTagLabels);
 }
@@ -649,10 +651,22 @@ function attachTagCategoryQueries(node: LibraryNode): LibraryNode {
   };
 }
 
-function buildTagTree(rows: TagSummaryRow[]): LibraryNode | null {
+function attachUserTagCategoryQueries(node: LibraryNode): LibraryNode {
+  const children = node.children?.map(attachUserTagCategoryQueries);
+  if (node.kind !== "tagCategory") return { ...node, children };
+
+  const tags = children?.flatMap(descendantTagLabels) ?? [];
+  return {
+    ...node,
+    children,
+    queryText: tags.length > 0 ? `usertagany:"${tags.join("|")}"` : node.queryText,
+  };
+}
+
+function buildLocalTagTree(rows: TagSummaryRow[]): LibraryNode | null {
   const tagRoot: LibraryNode = {
     id: "local-tags",
-    label: "Tags",
+    label: "Local Tags",
     kind: "tagRoot",
     children: [],
   };
@@ -692,6 +706,7 @@ function buildTagTree(rows: TagSummaryRow[]): LibraryNode | null {
       id: tagNodeId("local-tags-tag", tag),
       label: tag,
       kind: "query",
+      queryTag: tag,
       queryText: `tag:${quoteSearchFilterValue(tag)}`,
       children: [],
     });
@@ -699,6 +714,89 @@ function buildTagTree(rows: TagSummaryRow[]): LibraryNode | null {
 
   tagRoot.children = sortTagNodes(tagRoot.children ?? []).map(attachTagCategoryQueries);
   return tagRoot.children.length > 0 ? tagRoot : null;
+}
+
+function buildUserTagTree(rows: TagSummaryRow[]): LibraryNode | null {
+  const tagRoot: LibraryNode = {
+    id: "user-tags",
+    label: "User Tags",
+    kind: "tagRoot",
+    children: [],
+  };
+  const categories = new Map<string, LibraryNode>();
+
+  for (const row of rows) {
+    const tag = canonicalizeUserTag(row.tag);
+    if (!tag || row.count <= 0) continue;
+    const [category, label] = splitUserGroupedTag(tag);
+    const parent = category
+      ? ensureUserCategory(tagRoot, categories, category)
+      : tagRoot;
+    parent.children?.push({
+      id: tagNodeId("user-tags-tag", tag),
+      label,
+      kind: "query",
+      queryTag: tag,
+      queryText: `usertag:${quoteSearchFilterValue(tag)}`,
+      children: [],
+    });
+  }
+
+  tagRoot.children = sortTagNodes(tagRoot.children ?? []).map(
+    attachUserTagCategoryQueries,
+  );
+  return tagRoot.children.length > 0 ? tagRoot : null;
+}
+
+function ensureUserCategory(
+  root: LibraryNode,
+  categories: Map<string, LibraryNode>,
+  category: string,
+): LibraryNode {
+  const nodeId = tagNodeId("user-tags-category", category);
+  const existing = categories.get(nodeId);
+  if (existing) return existing;
+  const node: LibraryNode = {
+    id: nodeId,
+    label: category,
+    kind: "tagCategory",
+    children: [],
+  };
+  categories.set(nodeId, node);
+  root.children?.push(node);
+  return node;
+}
+
+function splitUserGroupedTag(tag: string): [string | null, string] {
+  const [category, label] = tag.split(":", 2);
+  return category && label ? [category, label] : [null, tag];
+}
+
+function canonicalizeUserTag(tag: string): string {
+  if (tag.includes(":")) {
+    const [category, label] = tag.split(":", 2);
+    const normalizedCategory = canonicalizeTag(category ?? "");
+    const normalizedLabel = canonicalizeTag(label ?? "");
+    return normalizedCategory && normalizedLabel
+      ? `${normalizedCategory}:${normalizedLabel}`
+      : "";
+  }
+  return canonicalizeTag(tag);
+}
+
+function buildTagTree(rows: TagSummaryRow[]): LibraryNode | null {
+  const localRoot = buildLocalTagTree(rows.filter((row) => row.source !== "user"));
+  const userRoot = buildUserTagTree(rows.filter((row) => row.source === "user"));
+  const children = [localRoot, userRoot].filter((node): node is LibraryNode =>
+    Boolean(node),
+  );
+  if (children.length === 0) return null;
+  return {
+    id: "all-tags",
+    label: "Tags",
+    kind: "tagRoot",
+    children,
+  };
 }
 
 async function loadTagSummary(): Promise<TagSummaryRow[]> {
@@ -709,6 +807,18 @@ async function loadTagSummary(): Promise<TagSummaryRow[]> {
       limit: 5000,
     },
   });
+}
+
+async function loadTagTree(): Promise<LibraryNode | null> {
+  return loadTagSummary().then(buildTagTree);
+}
+
+function replaceTagRoot(
+  nodes: LibraryNode[],
+  tagRoot: LibraryNode | null,
+): LibraryNode[] {
+  const withoutTags = nodes.filter((node) => node.id !== "all-tags");
+  return tagRoot ? [...withoutTags, tagRoot] : withoutTags;
 }
 
 async function loadLibraryTree(): Promise<LibraryNode[] | null> {
@@ -737,9 +847,7 @@ async function loadLibraryTree(): Promise<LibraryNode[] | null> {
       };
     }),
   );
-  const tagRoot = await loadTagSummary()
-    .then(buildTagTree)
-    .catch(() => null);
+  const tagRoot = await loadTagTree().catch(() => null);
 
   return [
     {
@@ -770,7 +878,13 @@ const initialTabs: AppViewTab[] = [
   },
 ];
 const shellSessionStorageKey = "sonilabs.appShellSession.v2";
-const defaultLibraryExpandedIds = ["libraries-local", "local-main", "local-tags"];
+const defaultLibraryExpandedIds = [
+  "libraries-local",
+  "local-main",
+  "all-tags",
+  "local-tags",
+  "user-tags",
+];
 const defaultCollectionExpandedIds = ["project"];
 
 type StoredShellSession = {
@@ -837,7 +951,9 @@ function AppShellContent() {
   const settingsOpen = modalManager.isOpen("settings");
   const [settingsTab, setSettingsTab] = useState<SettingsPanelTab>("main");
   const [refreshStatus, setRefreshStatus] = useState<string | null>(null);
-  const [startupUpdate, setStartupUpdate] = useState<AppUpdateAvailability | null>(null);
+  const [startupUpdate, setStartupUpdate] = useState<AppUpdateAvailability | null>(
+    null,
+  );
   const [startupUpdateStatus, setStartupUpdateStatus] = useState<string | null>(null);
   const [metadata, setMetadata] = useState<LazyMetadataResponse["metadataByRowId"]>({});
   const [sidebarWidth, setSidebarWidth] = useState(
@@ -911,6 +1027,12 @@ function AppShellContent() {
       .then((next) => {
         if (next) setLibraryNodes(next);
       })
+      .catch(() => undefined);
+  }, []);
+
+  const refreshTagTree = useCallback(() => {
+    void loadTagTree()
+      .then((tagRoot) => setLibraryNodes((current) => replaceTagRoot(current, tagRoot)))
       .catch(() => undefined);
   }, []);
 
@@ -1316,9 +1438,12 @@ function AppShellContent() {
     [activeTabId],
   );
 
-  const restoreNavigationTab = useCallback((tab: AppViewTab) => {
-    setTabs((current) => restoreTabInActiveSlot(current, activeTabId, tab).tabs);
-  }, [activeTabId]);
+  const restoreNavigationTab = useCallback(
+    (tab: AppViewTab) => {
+      setTabs((current) => restoreTabInActiveSlot(current, activeTabId, tab).tabs);
+    },
+    [activeTabId],
+  );
 
   const navigateViewHistory = useCallback(
     (direction: "back" | "forward") => {
@@ -2770,6 +2895,7 @@ function AppShellContent() {
       {summaryOpen ? (
         <RightInspector
           activeAsset={activeAsset}
+          onMetadataChanged={refreshTagTree}
           onClose={() => modalManager.close("file-summary")}
         />
       ) : null}

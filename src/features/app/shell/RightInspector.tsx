@@ -1,7 +1,12 @@
-import { X } from "lucide-react";
+import { Plus, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
+import {
+  assetUserMetadata,
+  updateAssetUserMetadata,
+  type AssetUserMetadata,
+} from "@/features/audio-preview/commands";
 import { audioPreviewService } from "@/features/audio-preview/previewService";
 import {
   canonicalProcessingChain,
@@ -9,11 +14,15 @@ import {
 } from "@/features/audio-preview/processingChain";
 import type { ProcessingSettings } from "@/features/audio-preview/types";
 import type { BrowseRow } from "@/features/browsing/browseTypes";
-import { categorySummaryForTags } from "@/features/browsing/tagCategories";
+import {
+  canonicalizeTag,
+  categorySummaryForTags,
+} from "@/features/browsing/tagCategories";
 import { formatAudioTimeParts } from "@/lib/timeFormat";
 
 type RightInspectorProps = {
   activeAsset: Extract<BrowseRow, { kind: "asset" }> | null;
+  onMetadataChanged?: () => void;
   onClose: () => void;
 };
 
@@ -28,10 +37,18 @@ function InfoRow({ label, value }: { label: string; value: string }) {
   );
 }
 
-export function RightInspector({ activeAsset, onClose }: RightInspectorProps) {
+export function RightInspector({
+  activeAsset,
+  onClose,
+  onMetadataChanged,
+}: RightInspectorProps) {
   const [processing, setProcessing] = useState<ProcessingSettings>(
     audioPreviewService.getProcessing(),
   );
+  const [metadata, setMetadata] = useState<AssetUserMetadata | null>(null);
+  const [tagInput, setTagInput] = useState("");
+  const [commentDraft, setCommentDraft] = useState("");
+  const [saveStatus, setSaveStatus] = useState<string | null>(null);
   const chain = useMemo(
     () => createGainProcessingChain(processing.gainDb),
     [processing.gainDb],
@@ -42,6 +59,73 @@ export function RightInspector({ activeAsset, onClose }: RightInspectorProps) {
   );
 
   useEffect(() => audioPreviewService.subscribeProcessing(setProcessing), []);
+  useEffect(() => {
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
+      setSaveStatus(null);
+      setTagInput("");
+    });
+    if (!activeAsset) {
+      queueMicrotask(() => {
+        if (cancelled) return;
+        setMetadata(null);
+        setCommentDraft("");
+      });
+      return () => {
+        cancelled = true;
+      };
+    }
+    void assetUserMetadata(activeAsset.id)
+      .then((next) => {
+        if (cancelled) return;
+        setMetadata(next);
+        setCommentDraft(next.userComment);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setMetadata({ assetId: activeAsset.id, userTags: [], userComment: "" });
+          setCommentDraft("");
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeAsset]);
+
+  const saveUserMetadata = async (
+    nextTags = metadata?.userTags ?? [],
+    nextComment = commentDraft,
+  ) => {
+    if (!activeAsset) return;
+    setSaveStatus("Saving...");
+    try {
+      const saved = await updateAssetUserMetadata({
+        assetId: activeAsset.id,
+        userTags: nextTags,
+        userComment: nextComment,
+      });
+      setMetadata(saved);
+      setCommentDraft(saved.userComment);
+      setSaveStatus("Saved");
+      onMetadataChanged?.();
+    } catch (error) {
+      setSaveStatus(error instanceof Error ? error.message : "Save failed");
+    }
+  };
+
+  const addUserTag = () => {
+    const nextTag = normalizeUserTagInput(tagInput);
+    if (!nextTag || !metadata) return;
+    const nextTags = [...new Set([...metadata.userTags, nextTag])].sort();
+    setTagInput("");
+    void saveUserMetadata(nextTags);
+  };
+
+  const removeUserTag = (tag: string) => {
+    if (!metadata) return;
+    void saveUserMetadata(metadata.userTags.filter((candidate) => candidate !== tag));
+  };
 
   if (!activeAsset) {
     return (
@@ -100,6 +184,52 @@ export function RightInspector({ activeAsset, onClose }: RightInspectorProps) {
           />
         </div>
       </section>
+      <section className="border-b border-border p-3">
+        <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-foreground">
+          User Metadata
+        </div>
+        <div className="mb-2 flex flex-wrap gap-1">
+          {metadata?.userTags.length ? (
+            metadata.userTags.map((tag) => (
+              <button
+                className="rounded-sm border border-border bg-muted px-1.5 py-0.5 text-[11px] text-foreground hover:border-destructive"
+                key={tag}
+                onClick={() => removeUserTag(tag)}
+                title="Remove user tag"
+                type="button"
+              >
+                {displayUserTag(tag)}
+              </button>
+            ))
+          ) : (
+            <span className="text-muted-foreground">No user tags</span>
+          )}
+        </div>
+        <div className="mb-2 flex gap-1">
+          <input
+            className="h-7 min-w-0 flex-1 rounded-sm border border-input bg-background px-2 text-[12px] outline-none focus-visible:border-primary"
+            onChange={(event) => setTagInput(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") addUserTag();
+            }}
+            placeholder="Add tag"
+            value={tagInput}
+          />
+          <Button className="size-7 p-0" onClick={addUserTag} size="icon">
+            <Plus className="size-3.5" />
+          </Button>
+        </div>
+        <textarea
+          className="h-24 w-full resize-none rounded-sm border border-input bg-background p-2 text-[12px] text-foreground outline-none focus-visible:border-primary"
+          onBlur={() => void saveUserMetadata(undefined, commentDraft)}
+          onChange={(event) => setCommentDraft(event.target.value)}
+          placeholder="User comments"
+          value={commentDraft}
+        />
+        {saveStatus ? (
+          <div className="mt-1 text-[11px] text-muted-foreground">{saveStatus}</div>
+        ) : null}
+      </section>
       <section className="p-3">
         <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-foreground">
           Processing Chain
@@ -118,4 +248,20 @@ export function RightInspector({ activeAsset, onClose }: RightInspectorProps) {
       </section>
     </aside>
   );
+}
+
+function normalizeUserTagInput(input: string): string {
+  const compact = input.trim().replace(/\s+/g, " ");
+  const grouped = compact.match(/^(.+?)\s+(?:view\s*)?v?(\d+)$/i);
+  if (grouped) {
+    const category = canonicalizeTag(grouped[1] ?? "");
+    const version = `v${grouped[2]}`;
+    if (category) return `${category}:${version}`;
+  }
+  return canonicalizeTag(compact);
+}
+
+function displayUserTag(tag: string): string {
+  const [category, label] = tag.split(":", 2);
+  return category && label ? `${category} / ${label}` : tag;
 }

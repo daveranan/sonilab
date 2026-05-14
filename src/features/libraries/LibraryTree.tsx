@@ -235,7 +235,7 @@ function TreeNode({
               Source settings
             </ContextMenuItem>
           ) : null}
-          {node.kind === "root" && node.id !== "local-tags" ? (
+          {node.kind === "root" && node.id === "libraries-local" ? (
             <ContextMenuItem disabled>Add source</ContextMenuItem>
           ) : null}
           <ContextMenuSeparator className="my-1 h-px bg-border" />
@@ -314,7 +314,8 @@ export function LibraryTree({
   onCopyPath,
 }: LibraryTreeProps) {
   const [internalExpanded, setInternalExpanded] = useState(
-    () => new Set(["libraries-local", "local-main", "local-tags"]),
+    () =>
+      new Set(["libraries-local", "local-main", "all-tags", "local-tags", "user-tags"]),
   );
   const expanded = new Set(expandedIds ?? [...internalExpanded]);
 

@@ -121,6 +121,12 @@ function filterMatches(row: BrowseRow, filter: SearchFilter): boolean {
         const tags = filter.value.split("|");
         return tags.some((tag) => row.tags.includes(tag));
       }
+      case "usertag":
+        return row.tags.includes(filter.value);
+      case "usertagany": {
+        const tags = filter.value.split("|");
+        return tags.some((tag) => row.tags.includes(tag));
+      }
       case "license":
         return row.license === filter.value;
       case "rights":

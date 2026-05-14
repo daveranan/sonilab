@@ -41,6 +41,22 @@ export type CacheManagementSummary = {
   byKind: CacheKindSummary[];
 };
 
+export type AssetUserMetadata = {
+  assetId: string;
+  userTags: string[];
+  userComment: string;
+};
+
+export type RegionNote = {
+  id: string;
+  assetId: string;
+  startSeconds: number;
+  endSeconds: number;
+  comment: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type LicenseAttributionRow = {
   assetId: string;
   name: string;
@@ -292,17 +308,14 @@ export async function getCachedWaveformPeakRange(
 ): Promise<WaveformPeakData | null> {
   if (hasTauri()) {
     try {
-      return await invoke<WaveformPeakData | null>(
-        "get_cached_waveform_peak_range",
-        {
-          assetId,
-          contentKey,
-          channelMode,
-          samplesPerPeak,
-          startSeconds,
-          endSeconds,
-        },
-      );
+      return await invoke<WaveformPeakData | null>("get_cached_waveform_peak_range", {
+        assetId,
+        contentKey,
+        channelMode,
+        samplesPerPeak,
+        startSeconds,
+        endSeconds,
+      });
     } catch {
       return null;
     }
@@ -375,6 +388,57 @@ export async function licenseAttributionReport(
 ): Promise<LicenseAttributionRow[]> {
   if (!hasTauri()) return [];
   return invoke<LicenseAttributionRow[]>("license_attribution_report", { limit });
+}
+
+export async function assetUserMetadata(assetId: string): Promise<AssetUserMetadata> {
+  if (!hasTauri()) return { assetId, userTags: [], userComment: "" };
+  return invoke<AssetUserMetadata>("asset_user_metadata", { assetId });
+}
+
+export async function updateAssetUserMetadata(input: {
+  assetId: string;
+  userTags: string[];
+  userComment: string;
+}): Promise<AssetUserMetadata> {
+  if (!hasTauri()) {
+    return {
+      assetId: input.assetId,
+      userTags: input.userTags,
+      userComment: input.userComment,
+    };
+  }
+  return invoke<AssetUserMetadata>("update_asset_user_metadata", input);
+}
+
+export async function listRegionNotes(assetId: string): Promise<RegionNote[]> {
+  if (!hasTauri()) return [];
+  return invoke<RegionNote[]>("list_region_notes", { assetId });
+}
+
+export async function upsertRegionNote(input: {
+  id?: string | null;
+  assetId: string;
+  startSeconds: number;
+  endSeconds: number;
+  comment: string;
+}): Promise<RegionNote> {
+  if (!hasTauri()) {
+    return {
+      id: input.id ?? `mock-note-${Date.now()}`,
+      assetId: input.assetId,
+      startSeconds: input.startSeconds,
+      endSeconds: input.endSeconds,
+      comment: input.comment,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+  }
+  return invoke<RegionNote>("upsert_region_note", input);
+}
+
+export async function deleteRegionNote(id: string): Promise<boolean> {
+  if (!hasTauri()) return true;
+  return invoke<boolean>("delete_region_note", { id });
 }
 
 export async function updateFlowStatus(): Promise<UpdateFlowStatus | null> {
