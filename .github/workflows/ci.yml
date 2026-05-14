@@ -142,7 +142,7 @@ jobs:
           opus_prefix="$(brew --prefix opus)"
           zlib_prefix="$(brew --prefix zlib)"
           png_prefix="$(brew --prefix libpng)"
-          mad_prefix="$(brew --prefix libmad)"
+          mad_prefix="$(brew --prefix mad 2>/dev/null || brew --prefix libmad)"
           id3tag_prefix="$(brew --prefix libid3tag)"
           vorbis_prefix="$(brew --prefix libvorbis)"
           sdk_root="$(xcrun --sdk macosx --show-sdk-path)"
