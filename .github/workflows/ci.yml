@@ -131,7 +131,7 @@ jobs:
           src-tauri/bin/ffmpeg -version
 
       - name: Build macOS package
-        run: npm run typecheck && node scripts/bump-build-version.mjs && npm run tauri -- build --target ${{ matrix.target }} --bundles dmg
+        run: npm run typecheck && node scripts/bump-build-version.mjs && npm run tauri -- build --target ${{ matrix.target }} --bundles app,dmg
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
