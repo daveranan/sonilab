@@ -163,6 +163,9 @@ jobs:
             libmad_build="$RUNNER_TEMP/libmad-static"
             mkdir -p "$libmad_build/src" "$libmad_build/include" "$libmad_build/lib"
             curl -L https://downloads.sourceforge.net/project/mad/libmad/0.15.1b/libmad-0.15.1b.tar.gz | tar -xz -C "$libmad_build/src" --strip-components 1
+            sed -i.bak '1i\
+#include <stdlib.h>
+' "$libmad_build/src/global.h"
             cc -O3 -DFPM_DEFAULT -I"$libmad_build/src" -c \
               "$libmad_build/src"/version.c \
               "$libmad_build/src"/fixed.c \
