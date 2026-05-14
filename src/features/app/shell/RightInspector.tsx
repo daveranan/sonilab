@@ -10,6 +10,7 @@ import {
 import type { ProcessingSettings } from "@/features/audio-preview/types";
 import type { BrowseRow } from "@/features/browsing/browseTypes";
 import { categorySummaryForTags } from "@/features/browsing/tagCategories";
+import { formatAudioTimeParts } from "@/lib/timeFormat";
 
 type RightInspectorProps = {
   activeAsset: Extract<BrowseRow, { kind: "asset" }> | null;
@@ -85,11 +86,7 @@ export function RightInspector({ activeAsset, onClose }: RightInspectorProps) {
           <InfoRow label="Format" value={activeAsset.format ?? "--"} />
           <InfoRow
             label="Duration"
-            value={
-              activeAsset.durationSeconds === null
-                ? "--"
-                : `${activeAsset.durationSeconds.toFixed(2)}s`
-            }
+            value={formatAudioTimeParts(activeAsset.durationSeconds).full}
           />
           <InfoRow label="Rate" value={activeAsset.sampleRate?.toString() ?? "--"} />
           <InfoRow label="Bits" value={activeAsset.bitDepth?.toString() ?? "--"} />

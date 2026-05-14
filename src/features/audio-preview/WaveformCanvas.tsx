@@ -9,6 +9,7 @@ import {
 } from "./commands";
 import { processedGain } from "./audioMath";
 import { audioPreviewService, type OutputMeterSnapshot } from "./previewService";
+import { formatAudioTimeParts } from "@/lib/timeFormat";
 import type {
   WaveformPeakChannel,
   WaveformPeakData,
@@ -28,7 +29,6 @@ type WaveformCanvasProps = {
   assetId: string | null;
   contentKey: string | null;
   durationSeconds?: number | null;
-  fileSizeBytes?: number | null;
   loopCrossfadeDesiredSeconds?: number;
   loopCrossfadeEnabled?: boolean;
   loopCrossfadeSlope?: number;
@@ -104,7 +104,6 @@ const fileDragThresholdPixels = 24;
 const fileDragMinimumAgeMs = 120;
 const minVerticalZoom = 0.5;
 const maxVerticalZoom = 8;
-const deferredWaveformBytes = 512 * 1024 * 1024;
 const coldWaveformDelayMs = 120;
 const waveformRetryDelaysMs = [250, 800, 1800];
 const zoomWaveformDelayMs = 90;
@@ -153,7 +152,6 @@ export function WaveformCanvas({
   assetId,
   contentKey,
   durationSeconds,
-  fileSizeBytes,
   loopCrossfadeDesiredSeconds = 0,
   loopCrossfadeEnabled = false,
   loopCrossfadeSlope = 1,
@@ -655,7 +653,15 @@ export function WaveformCanvas({
       window.clearTimeout(waveformResolutionTimerRef.current);
       waveformResolutionTimerRef.current = null;
     }
-    if (!assetId || !contentKey || (fileSizeBytes ?? 0) > deferredWaveformBytes) {
+    const width = canvasRef.current?.getBoundingClientRect().width ?? 1200;
+    const knownDuration = Math.max(
+      0.001,
+      durationSeconds ?? audioPreviewService.getState().durationSeconds ?? 0,
+    );
+    if (!sameAsset) {
+      viewportRef.current = fitViewport(knownDuration, width);
+    }
+    if (!assetId || !contentKey) {
       if (!sameAsset) {
         peakDataRef.current = null;
         loadedAssetIdRef.current = null;
@@ -693,8 +699,6 @@ export function WaveformCanvas({
         redraw();
       }
     });
-    const width = canvasRef.current?.getBoundingClientRect().width ?? 1200;
-    const knownDuration = durationSeconds ?? 0;
     const knownSampleRate = sampleRate ?? 0;
     const samplesPerPeak = samplesPerPeakForDisplay(
       knownDuration,
@@ -784,7 +788,6 @@ export function WaveformCanvas({
     applyPeakData,
     contentKey,
     durationSeconds,
-    fileSizeBytes,
     redraw,
     sampleRate,
   ]);
@@ -1506,9 +1509,9 @@ export function WaveformCanvas({
       </div>
       <div className="absolute inset-x-0 bottom-0 grid grid-cols-3 items-center gap-x-3 bg-black/80 px-3 py-1.5 font-mono text-[10px] text-zinc-200">
         <div className="flex min-w-0 items-center gap-2">
-          <span>{formatWaveformTime(playheadSeconds)}</span>
+          <WaveformTimecode seconds={playheadSeconds} />
           <span className={region ? "text-blue-300" : "text-zinc-300"}>
-            {formatWaveformTime(displayedLengthSeconds)}
+            <WaveformTimecode seconds={displayedLengthSeconds} />
           </span>
           {loopCrossfadeEnabled && loopCrossfadeSeconds > 0 ? (
             <span className="text-cyan-200">
@@ -2051,11 +2054,15 @@ function channelLabel(index: number, channelCount: number): string {
   return `Ch ${index + 1}`;
 }
 
-function formatWaveformTime(seconds: number): string {
-  if (!Number.isFinite(seconds) || seconds < 0) return "--";
-  const minutes = Math.floor(seconds / 60);
-  const rest = seconds - minutes * 60;
-  return `${minutes}:${rest.toFixed(3).padStart(6, "0")}`;
+function WaveformTimecode({ seconds }: { seconds: number }) {
+  const parts = formatAudioTimeParts(seconds);
+  if (!parts.milliseconds) return <span>{parts.main}</span>;
+  return (
+    <span className="inline-flex items-baseline font-mono tabular-nums">
+      <span>{parts.main}</span>
+      <span className="text-[0.82em] opacity-85">.{parts.milliseconds}</span>
+    </span>
+  );
 }
 
 function formatMilliseconds(seconds: number): string {

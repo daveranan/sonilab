@@ -5,10 +5,11 @@ import { spawnSync } from "node:child_process";
 const source = process.env.FFMPEG_PATH;
 const minimumVersion = process.env.FFMPEG_MIN_VERSION ?? "6.0";
 const sidecarDir = path.resolve("src-tauri", "bin");
-const sidecarPath = path.join(sidecarDir, "ffmpeg.exe");
+const sidecarName = process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg";
+const sidecarPath = path.join(sidecarDir, sidecarName);
 
 if (!source) {
-  console.error("Set FFMPEG_PATH to the ffmpeg.exe to stage.");
+  console.error(`Set FFMPEG_PATH to the ${sidecarName} binary to stage.`);
   process.exit(1);
 }
 

@@ -86,7 +86,7 @@ type LogExport = {
 const settingsStorageKey = "sonilabs.productionPolishSettings";
 const defaultExportDefaults: ExportDefaults = {
   format: "WAV",
-  filenamePattern: "{name}_processed",
+  filenamePattern: "{name}",
   overwriteMode: "rename",
   preserveFolders: false,
   includeSidecar: false,

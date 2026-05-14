@@ -299,7 +299,9 @@ export class AudioPreviewService {
     this.tempLoopPreview = { assetId, region, loopDurationSeconds, headSkipSeconds: 0 };
     let byteLength = 0;
     try {
-      const url = convertFileSrc(path);
+      const baseUrl = convertFileSrc(path);
+      const separator = baseUrl.includes("?") ? "&" : "?";
+      const url = `${baseUrl}${separator}previewRequest=${requestId}`;
       const data = await fetchPreviewArrayBuffer(url, this.abortController?.signal);
       byteLength = data.byteLength;
       if (!this.isCurrent(requestId)) return;

@@ -43,6 +43,7 @@ import { WaveformCanvas } from "@/features/audio-preview/WaveformCanvas";
 import { audioPreviewService } from "@/features/audio-preview/previewService";
 import type { OutputMeterSnapshot } from "@/features/audio-preview/previewService";
 import type {
+  PreviewFileResolution,
   PreviewState,
   ProcessingSettings,
   WaveformRegion,
@@ -267,7 +268,7 @@ export function BottomDockPlaceholder({
     () => window.localStorage.getItem(tempFolderStorageKey) ?? "",
   );
   const [filenamePattern, setFilenamePattern] = useState(
-    initialExportDefaults.filenamePattern ?? "{name}_processed",
+    initialExportDefaults.filenamePattern ?? "{name}",
   );
   const [exportScope, setExportScope] = useState<"full" | "region">("full");
   const [overwriteMode, setOverwriteMode] = useState<"skip" | "replace" | "rename">(
@@ -301,6 +302,8 @@ export function BottomDockPlaceholder({
   const crossfadePreviewKeyRef = useRef<string | null>(null);
   const crossfadeRenderGenerationRef = useRef(0);
   const crossfadeRenderCancelledRef = useRef(false);
+  const [lastWaveformResolution, setLastWaveformResolution] =
+    useState<PreviewFileResolution | null>(null);
   const [previewState, setPreviewState] = useState<PreviewState>(
     audioPreviewService.getState(),
   );
@@ -345,15 +348,21 @@ export function BottomDockPlaceholder({
       ),
     [rows, selectedRowIds],
   );
-  const activeResolution = audioPreviewService.getActiveResolution();
-  const contentKey =
-    activeResolution && activeResolution.assetId === displayAsset?.id
-      ? activeResolution.contentKey
-      : displayAsset
-        ? `mock:${displayAsset.id}`
-        : null;
   const loopEnabled = previewState.loopMode !== "off";
   const tempLoopPreviewActive = audioPreviewService.hasTempLoopPreview();
+  const activeResolution = audioPreviewService.getActiveResolution();
+  const activeWaveformResolution =
+    activeResolution && activeResolution.assetId === displayAsset?.id
+      ? activeResolution
+      : null;
+  const retainedWaveformResolution =
+    lastWaveformResolution?.assetId === displayAsset?.id
+      ? lastWaveformResolution
+      : null;
+  const contentKey =
+    activeWaveformResolution?.contentKey ??
+    retainedWaveformResolution?.contentKey ??
+    (displayAsset && !tempLoopPreviewActive ? `mock:${displayAsset.id}` : null);
   const effectiveLoopEnabled =
     loopEnabled || loopCrossfadeEnabled || tempLoopPreviewActive;
   const activeLoopCrossfadeSeconds = loopCrossfadeEnabled
@@ -373,6 +382,15 @@ export function BottomDockPlaceholder({
     () =>
       audioPreviewService.subscribe((state) => {
         setPreviewState(state);
+        const resolution = audioPreviewService.getActiveResolution();
+        if (resolution) {
+          setLastWaveformResolution((current) =>
+            current?.assetId === resolution.assetId &&
+            current.contentKey === resolution.contentKey
+              ? current
+              : resolution,
+          );
+        }
         if (state.status === "failed") {
           setExportStatus(state.errorMessage ?? "Preview playback failed.");
         }
@@ -644,7 +662,7 @@ export function BottomDockPlaceholder({
         crossfadeRenderCancelledRef.current = false;
         const prepared = await prepareRegionDragFile({
           assetId: displayAsset.id,
-          displayName: `${displayAsset.name}_loop`,
+          displayName: displayAsset.name,
           format: "wav",
           formatSettings: { wavBitDepth: 16 },
           gainDb: processing.gainDb,
@@ -797,12 +815,17 @@ export function BottomDockPlaceholder({
   }, []);
 
   const startCrossfadeLoopPreview = useCallback(
-    (crossfadeOverride?: number, startSecondsOverride?: number) => {
+    (
+      crossfadeOverride?: number,
+      startSecondsOverride?: number,
+      slopeOverride?: number,
+    ) => {
       if (!displayAsset || !activeRegion) return;
       const crossfadeSeconds = clampLoopCrossfadeSeconds(
         activeRegion,
         crossfadeOverride ?? loopCrossfadeWidthSeconds,
       );
+      const crossfadeSlope = slopeOverride ?? loopCrossfadeSlope;
       if (crossfadeSeconds <= 0) return;
       setExportStatus("Rendering crossfade loop temp preview...");
       beginCrossfadeProgress();
@@ -819,7 +842,7 @@ export function BottomDockPlaceholder({
           activeRegion.startSeconds.toFixed(5),
           activeRegion.endSeconds.toFixed(5),
           crossfadeSeconds.toFixed(5),
-          loopCrossfadeSlope.toFixed(3),
+          crossfadeSlope.toFixed(3),
           processing.gainDb.toFixed(2),
           tempFolder,
         ].join(":");
@@ -848,12 +871,12 @@ export function BottomDockPlaceholder({
         const previousPath = crossfadePreviewPathRef.current;
         const prepared = await prepareRegionDragFile({
           assetId: displayAsset.id,
-          displayName: `${displayAsset.name}_xfade_loop`,
+          displayName: displayAsset.name,
           format: "wav",
           formatSettings: { wavBitDepth: 16 },
           gainDb: processing.gainDb,
           loopCrossfadeSeconds: crossfadeSeconds,
-          loopCrossfadeSlope,
+          loopCrossfadeSlope: crossfadeSlope,
           region: activeRegion,
           tempFolder,
         });
@@ -895,7 +918,7 @@ export function BottomDockPlaceholder({
           regionStartSeconds: activeRegion.startSeconds,
           regionEndSeconds: activeRegion.endSeconds,
           crossfadeSeconds,
-          loopCrossfadeSlope,
+          loopCrossfadeSlope: crossfadeSlope,
           tempFolder,
           error: error instanceof Error ? error.message : String(error),
           stack: error instanceof Error ? error.stack : undefined,
@@ -918,14 +941,14 @@ export function BottomDockPlaceholder({
   );
 
   const scheduleCrossfadeLoopPreview = useCallback(
-    (crossfadeSeconds: number) => {
+    (crossfadeSeconds: number, slopeOverride?: number) => {
       if (!loopCrossfadeEnabled || !activeRegion || !displayAsset) return;
       if (crossfadePreviewTimerRef.current !== null) {
         window.clearTimeout(crossfadePreviewTimerRef.current);
       }
       crossfadePreviewTimerRef.current = window.setTimeout(() => {
         crossfadePreviewTimerRef.current = null;
-        startCrossfadeLoopPreview(crossfadeSeconds);
+        startCrossfadeLoopPreview(crossfadeSeconds, undefined, slopeOverride);
       }, crossfadePreviewDebounceMs);
     },
     [activeRegion, displayAsset, loopCrossfadeEnabled, startCrossfadeLoopPreview],
@@ -1093,8 +1116,9 @@ export function BottomDockPlaceholder({
     (seconds: number) => {
       const nextSeconds = clampLoopCrossfadeSeconds(activeRegion, seconds);
       setLoopCrossfadeWidthSeconds(nextSeconds);
+      scheduleCrossfadeLoopPreview(nextSeconds, loopCrossfadeSlope);
     },
-    [activeRegion],
+    [activeRegion, loopCrossfadeSlope, scheduleCrossfadeLoopPreview],
   );
 
   const handleLoopCrossfadeSecondsCommit = useCallback(
@@ -1104,14 +1128,23 @@ export function BottomDockPlaceholder({
         return;
       }
       setLoopCrossfadeWidthSeconds(nextSeconds);
-      scheduleCrossfadeLoopPreview(nextSeconds);
+      scheduleCrossfadeLoopPreview(nextSeconds, loopCrossfadeSlope);
     },
-    [activeRegion, loopCrossfadeWidthSeconds, scheduleCrossfadeLoopPreview],
+    [
+      activeRegion,
+      loopCrossfadeSlope,
+      loopCrossfadeWidthSeconds,
+      scheduleCrossfadeLoopPreview,
+    ],
   );
 
-  const handleLoopCrossfadeSlopeChange = useCallback((slope: number) => {
-    setLoopCrossfadeSlope(slope);
-  }, []);
+  const handleLoopCrossfadeSlopeChange = useCallback(
+    (slope: number) => {
+      setLoopCrossfadeSlope(slope);
+      scheduleCrossfadeLoopPreview(activeLoopCrossfadeSeconds, slope);
+    },
+    [activeLoopCrossfadeSeconds, scheduleCrossfadeLoopPreview],
+  );
 
   const handleLoopCrossfadeSlopeCommit = useCallback(
     (slope: number) => {
@@ -1119,7 +1152,7 @@ export function BottomDockPlaceholder({
         return;
       }
       setLoopCrossfadeSlope(slope);
-      scheduleCrossfadeLoopPreview(activeLoopCrossfadeSeconds);
+      scheduleCrossfadeLoopPreview(activeLoopCrossfadeSeconds, slope);
     },
     [activeLoopCrossfadeSeconds, loopCrossfadeSlope, scheduleCrossfadeLoopPreview],
   );
@@ -1338,7 +1371,7 @@ export function BottomDockPlaceholder({
     );
     void queueGainExportJobs({
       assetIds: batch.map((asset) => asset.id),
-      filenamePattern,
+      filenamePattern: "{name}",
       format,
       formatSettings,
       gainDb: processing.gainDb,
@@ -1377,7 +1410,6 @@ export function BottomDockPlaceholder({
     activeRegion,
     displayAsset,
     exportScope,
-    filenamePattern,
     format,
     formatSettings,
     includeSidecar,
@@ -1765,7 +1797,6 @@ export function BottomDockPlaceholder({
                 durationSeconds={
                   displayAsset.durationSeconds ?? activeResolution?.durationSeconds
                 }
-                fileSizeBytes={displayAsset.fileSizeBytes}
                 loopCrossfadeDesiredSeconds={desiredLoopCrossfadeSeconds}
                 loopCrossfadeEnabled={loopCrossfadeEnabled}
                 loopCrossfadeSlope={loopCrossfadeSlope}

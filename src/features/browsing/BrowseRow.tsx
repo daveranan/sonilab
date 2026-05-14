@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/context-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import { formatAudioTimeParts } from "@/lib/timeFormat";
 
 import type { BrowseRow as BrowseRowModel, LazyMetadataResponse } from "./browseTypes";
 import type { BrowseColumn } from "./columns";
@@ -39,11 +40,15 @@ type BrowseRowProps = {
   onDeleteRow?: (row: BrowseRowModel) => void;
 };
 
-function seconds(value: number | null): string {
-  if (value === null) return "--";
-  const minutes = Math.floor(value / 60);
-  const remaining = (value % 60).toFixed(3).padStart(6, "0");
-  return `${minutes}:${remaining}`;
+function DurationValue({ value }: { value: number | null }) {
+  const parts = formatAudioTimeParts(value);
+  if (!parts.milliseconds) return <span>{parts.main}</span>;
+  return (
+    <span className="inline-flex items-baseline font-mono tabular-nums">
+      <span>{parts.main}</span>
+      <span className="text-[0.82em] opacity-80">.{parts.milliseconds}</span>
+    </span>
+  );
 }
 
 function db(value: number | null): string {
@@ -186,7 +191,11 @@ function BrowseRowComponent({
 
     switch (columnId) {
       case "duration":
-        return <Cell>{seconds(row.durationSeconds)}</Cell>;
+        return (
+          <Cell className="font-mono tabular-nums">
+            <DurationValue value={row.durationSeconds} />
+          </Cell>
+        );
       case "rate":
         return <Cell>{row.sampleRate ? `${row.sampleRate / 1000}k` : "--"}</Cell>;
       case "bitDepth":

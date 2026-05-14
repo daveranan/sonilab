@@ -38,9 +38,6 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
     runs-on: windows-latest
 
-    permissions:
-      contents: write
-
     steps:
       - uses: actions/checkout@v4
 
@@ -72,9 +69,6 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
-      - name: Write updater metadata
-        run: npm run release:latest-json
-
       - uses: actions/upload-artifact@v4
         with:
           name: windows-installers
@@ -83,15 +77,123 @@ jobs:
             src-tauri/target/release/bundle/nsis/*.sig
             src-tauri/target/release/bundle/msi/*.msi
             src-tauri/target/release/bundle/msi/*.sig
-            src-tauri/target/release/bundle/latest.json
+
+  package-macos:
+    needs: checks
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            artifact: macos-intel
+          - os: macos-15
+            target: aarch64-apple-darwin
+            artifact: macos-arm64
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: cargo-${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('src-tauri/Cargo.lock') }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Stage macOS sidecars
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p src-tauri/bin
+
+          npm install --no-save --no-package-lock ffmpeg-static
+          ffmpeg_path="$(node -e 'console.log(require("ffmpeg-static"))')"
+          cp "$ffmpeg_path" src-tauri/bin/ffmpeg
+          chmod +x src-tauri/bin/ffmpeg
+
+          brew install cmake boost libmad libid3tag libsndfile gd
+          git clone --depth 1 --branch 1.10.3 https://github.com/bbc/audiowaveform "$RUNNER_TEMP/audiowaveform"
+          cmake -S "$RUNNER_TEMP/audiowaveform" -B "$RUNNER_TEMP/audiowaveform/build" \
+            -D CMAKE_BUILD_TYPE=Release \
+            -D ENABLE_TESTS=0 \
+            -D BUILD_STATIC=1
+          cmake --build "$RUNNER_TEMP/audiowaveform/build" --parallel 3
+          cp "$RUNNER_TEMP/audiowaveform/build/audiowaveform" src-tauri/bin/audiowaveform
+          chmod +x src-tauri/bin/audiowaveform
+
+          src-tauri/bin/ffmpeg -version
+          src-tauri/bin/audiowaveform --version
+
+      - name: Build macOS package
+        run: npm run typecheck && node scripts/bump-build-version.mjs && npm run tauri -- build --target ${{ matrix.target }} --bundles dmg
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      - name: Prepare macOS release files
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-macos
+          version="$(node -p 'require("./src-tauri/tauri.conf.json").version')"
+          artifact="${{ matrix.artifact }}"
+
+          dmg="$(find "src-tauri/target/${{ matrix.target }}/release/bundle/dmg" -name "*.dmg" -print -quit)"
+          tarball="$(find "src-tauri/target/${{ matrix.target }}/release/bundle/macos" -name "*.app.tar.gz" -print -quit)"
+
+          cp "$dmg" "release-macos/Sonilabs.Sound.Library.Processor_${version}_${artifact}.dmg"
+          cp "$tarball" "release-macos/Sonilabs.Sound.Library.Processor_${version}_${artifact}.app.tar.gz"
+          cp "$tarball.sig" "release-macos/Sonilabs.Sound.Library.Processor_${version}_${artifact}.app.tar.gz.sig"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: release-macos/*
+
+  release:
+    needs:
+      - package-windows
+      - package-macos
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Download package artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+
+      - name: Write updater metadata
+        run: npm run release:latest-json -- release-assets/latest.json release-assets
 
       - name: Create GitHub release
-        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            src-tauri/target/release/bundle/nsis/*setup.exe
-            src-tauri/target/release/bundle/nsis/*.sig
-            src-tauri/target/release/bundle/msi/*.msi
-            src-tauri/target/release/bundle/msi/*.sig
-            src-tauri/target/release/bundle/latest.json
+          files: release-assets/**/*

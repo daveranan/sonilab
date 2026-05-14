@@ -37,3 +37,4 @@ src-tauri/bin/*.zip
 *.njsproj
 *.sln
 *.sw?
+scripts/build-run-test.ps1

@@ -3,9 +3,15 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::process::Command;
 
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, Manager};
+
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 #[derive(Serialize)]
 pub struct AppPaths {
@@ -98,6 +104,7 @@ pub fn validate_ffmpeg_sidecar(
     minimum_version: Option<String>,
 ) -> Result<FfmpegValidation, String> {
     let minimum_version = minimum_version.unwrap_or_else(|| "6.0".to_string());
+    let executable = ffmpeg_executable_name();
     let mut candidates = Vec::new();
 
     if let Some(path) = configured_path {
@@ -112,9 +119,10 @@ pub fn validate_ffmpeg_sidecar(
         app.path()
             .resource_dir()
             .unwrap_or_default()
-            .join("bin/ffmpeg.exe"),
+            .join("bin")
+            .join(executable),
     );
-    candidates.push(PathBuf::from("src-tauri/bin/ffmpeg.exe"));
+    candidates.push(PathBuf::from("src-tauri/bin").join(executable));
     candidates.push(PathBuf::from("ffmpeg"));
 
     for candidate in candidates {
@@ -136,6 +144,14 @@ pub fn validate_ffmpeg_sidecar(
     Err(format!("FFmpeg {minimum_version}+ was not found."))
 }
 
+fn ffmpeg_executable_name() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "ffmpeg.exe"
+    } else {
+        "ffmpeg"
+    }
+}
+
 fn log_file_path(app: &AppHandle) -> Result<PathBuf, String> {
     let log_dir = app
         .path()
@@ -147,8 +163,11 @@ fn log_file_path(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 fn read_ffmpeg_version(path: &PathBuf) -> Option<String> {
-    let output = Command::new(path)
-        .arg("-version")
+    let mut command = Command::new(path);
+    command.arg("-version");
+    #[cfg(target_os = "windows")]
+    command.creation_flags(CREATE_NO_WINDOW);
+    let output = command
         .output()
         .ok()
         .filter(|output| output.status.success())?;

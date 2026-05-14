@@ -6,10 +6,16 @@ use std::sync::Mutex;
 use std::thread::sleep;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 use crate::reliability::{BoundedJobGate, CancellationRegistry, CancellationToken, JobDeadline};
+
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 pub struct ExportRuntime {
     lock: Mutex<()>,
@@ -166,7 +172,6 @@ struct GainProcessingChain {
 }
 
 struct ExportAssetRecord {
-    id: String,
     source_root_uri: String,
     path_or_url: String,
     name: String,
@@ -182,7 +187,6 @@ struct ExportJobRecord {
     id: String,
     asset_id: String,
     output_folder: String,
-    filename_pattern: String,
     export_scope: String,
     region_start_seconds: Option<f64>,
     region_end_seconds: Option<f64>,
@@ -485,10 +489,14 @@ fn run_ffmpeg_with_deadline(
     token: &CancellationToken,
     deadline: &JobDeadline,
 ) -> Result<std::process::Output, String> {
-    let mut child = Command::new(ffmpeg)
+    let mut command = Command::new(ffmpeg);
+    command
         .args(args)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(target_os = "windows")]
+    command.creation_flags(CREATE_NO_WINDOW);
+    let mut child = command
         .spawn()
         .map_err(|error| format!("failed to start FFmpeg: {error}"))?;
     loop {
@@ -729,12 +737,14 @@ pub fn prepare_asset_drag_file(
     fs::create_dir_all(&export_dir).map_err(|error| error.to_string())?;
     let extension = output_extension(&input.format);
     let file_name = format!("{}.{}", sanitize_file_stem(file_display_name), extension);
-    let output_path = unique_drag_output_path(&export_dir, &file_name);
+    let output_path = export_dir.join(&file_name);
+    if output_path.is_file() {
+        fs::remove_file(&output_path).map_err(|error| error.to_string())?;
+    }
     let job = ExportJobRecord {
         id: make_id("drag_job"),
         asset_id: input.asset_id.clone(),
         output_folder: export_dir.to_string_lossy().to_string(),
-        filename_pattern: "{name}".to_string(),
         export_scope: input.export_scope.clone(),
         region_start_seconds: input.region_start_seconds,
         region_end_seconds: input.region_end_seconds,
@@ -904,27 +914,6 @@ fn normalized_export_format(format: &str) -> String {
     }
 }
 
-fn unique_drag_output_path(export_dir: &Path, file_name: &str) -> PathBuf {
-    let path = export_dir.join(file_name);
-    if !path.exists() {
-        return path;
-    }
-
-    let stem = Path::new(file_name)
-        .file_stem()
-        .and_then(|value| value.to_str())
-        .unwrap_or("export");
-    let extension = Path::new(file_name)
-        .extension()
-        .and_then(|value| value.to_str())
-        .unwrap_or("wav");
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or_default();
-    export_dir.join(format!("{stem}_{nanos}.{extension}"))
-}
-
 fn prepare_mock_drag_file(
     temp_root: &Path,
     resource_dir: Option<&Path>,
@@ -955,7 +944,6 @@ fn prepare_mock_drag_file(
         let settings = parse_format_settings(&input.format, &input.format_settings_json)?;
         let ffmpeg = resolve_ffmpeg(resource_dir)?;
         let asset = ExportAssetRecord {
-            id: input.asset_id.clone(),
             source_root_uri: export_dir.to_string_lossy().to_string(),
             path_or_url: mock_wav_path.to_string_lossy().to_string(),
             name: format!("{file_stem}.wav"),
@@ -970,7 +958,6 @@ fn prepare_mock_drag_file(
             id: make_id("drag_job"),
             asset_id: input.asset_id.clone(),
             output_folder: export_dir.to_string_lossy().to_string(),
-            filename_pattern: "{name}".to_string(),
             export_scope: "full".to_string(),
             region_start_seconds: None,
             region_end_seconds: None,
@@ -1040,7 +1027,7 @@ fn validate_gain_processing_chain(
 fn export_asset(connection: &Connection, asset_id: &str) -> Result<ExportAssetRecord, String> {
     connection
         .query_row(
-            "SELECT a.id, s.root_uri, a.path_or_url, a.name, a.format, a.metadata_json,
+            "SELECT s.root_uri, a.path_or_url, a.name, a.format, a.metadata_json,
                     a.license, a.attribution, a.originator, a.source_url
              FROM assets a
              JOIN sources s ON s.id = a.source_id
@@ -1048,18 +1035,17 @@ fn export_asset(connection: &Connection, asset_id: &str) -> Result<ExportAssetRe
              LIMIT 1",
             params![asset_id],
             |row| {
-                let metadata_json: String = row.get(5)?;
+                let metadata_json: String = row.get(4)?;
                 Ok(ExportAssetRecord {
-                    id: row.get(0)?,
-                    source_root_uri: row.get(1)?,
-                    path_or_url: row.get(2)?,
-                    name: row.get(3)?,
-                    format: row.get(4)?,
+                    source_root_uri: row.get(0)?,
+                    path_or_url: row.get(1)?,
+                    name: row.get(2)?,
+                    format: row.get(3)?,
                     relative_path: metadata_relative_path(&metadata_json),
-                    license: row.get(6)?,
-                    attribution: row.get(7)?,
-                    originator: row.get(8)?,
-                    source_url: row.get(9)?,
+                    license: row.get(5)?,
+                    attribution: row.get(6)?,
+                    originator: row.get(7)?,
+                    source_url: row.get(8)?,
                 })
             },
         )
@@ -1069,16 +1055,16 @@ fn export_asset(connection: &Connection, asset_id: &str) -> Result<ExportAssetRe
 fn export_job_record(connection: &Connection, job_id: &str) -> Result<ExportJobRecord, String> {
     connection
         .query_row(
-            "SELECT id, asset_id, status, output_folder, filename_pattern,
-                    export_scope, region_start_seconds, region_end_seconds, format,
+            "SELECT id, asset_id, status, output_folder, export_scope,
+                    region_start_seconds, region_end_seconds, format,
                     format_settings_json, processing_json, preserve_folder_structure,
                     include_attribution_sidecar, overwrite_mode
              FROM export_jobs
              WHERE id = ?1",
             params![job_id],
             |row| {
-                let format: String = row.get(8)?;
-                let format_settings_json: String = row.get(9)?;
+                let format: String = row.get(7)?;
+                let format_settings_json: String = row.get(8)?;
                 let settings = parse_format_settings(&format, &format_settings_json)
                     .unwrap_or_else(|_| default_format_settings(&format));
                 Ok(ExportJobRecord {
@@ -1087,10 +1073,9 @@ fn export_job_record(connection: &Connection, job_id: &str) -> Result<ExportJobR
                         .get::<_, Option<String>>(1)?
                         .ok_or_else(|| rusqlite::Error::InvalidQuery)?,
                     output_folder: row.get(3)?,
-                    filename_pattern: row.get(4)?,
-                    export_scope: row.get(5)?,
-                    region_start_seconds: row.get(6)?,
-                    region_end_seconds: row.get(7)?,
+                    export_scope: row.get(4)?,
+                    region_start_seconds: row.get(5)?,
+                    region_end_seconds: row.get(6)?,
                     loop_crossfade_seconds: settings.loop_crossfade_seconds,
                     loop_crossfade_slope: settings.loop_crossfade_slope,
                     region_fade_gap_seconds: settings.region_fade_gap_seconds,
@@ -1100,10 +1085,10 @@ fn export_job_record(connection: &Connection, job_id: &str) -> Result<ExportJobR
                     region_fade_out_slope: settings.region_fade_out_slope,
                     format,
                     format_settings_json,
-                    processing_json: row.get(10)?,
-                    preserve_folder_structure: row.get::<_, i64>(11)? == 1,
-                    include_attribution_sidecar: row.get::<_, i64>(12)? == 1,
-                    overwrite_mode: row.get(13)?,
+                    processing_json: row.get(9)?,
+                    preserve_folder_structure: row.get::<_, i64>(10)? == 1,
+                    include_attribution_sidecar: row.get::<_, i64>(11)? == 1,
+                    overwrite_mode: row.get(12)?,
                 })
             },
         )
@@ -1285,7 +1270,7 @@ fn default_format_settings(format: &str) -> FormatSettings {
 fn plan_output_path(
     job: &ExportJobRecord,
     asset: &ExportAssetRecord,
-    chain: &GainProcessingChain,
+    _chain: &GainProcessingChain,
     _settings: &FormatSettings,
 ) -> Result<PlannedOutput, String> {
     let mut folder = PathBuf::from(&job.output_folder);
@@ -1304,9 +1289,8 @@ fn plan_output_path(
     }
 
     let extension = output_extension(&job.format);
-    let mut file_stem = build_filename_pattern(job, asset, chain);
-    file_stem = sanitize_output_stem(&file_stem);
-    let mut path = folder.join(format!("{file_stem}.{extension}"));
+    let file_stem = sanitize_file_stem(&asset.name);
+    let path = folder.join(format!("{file_stem}.{extension}"));
     if !path.exists() || job.overwrite_mode == "replace" {
         return Ok(PlannedOutput {
             path,
@@ -1319,16 +1303,10 @@ fn plan_output_path(
             skipped: true,
         });
     }
-    for index in 2..10_000 {
-        path = folder.join(format!("{file_stem}_{index}.{extension}"));
-        if !path.exists() {
-            return Ok(PlannedOutput {
-                path,
-                skipped: false,
-            });
-        }
-    }
-    Err("could not find a unique output filename".to_string())
+    Ok(PlannedOutput {
+        path,
+        skipped: true,
+    })
 }
 
 fn push_safe_relative_components(folder: &mut PathBuf, relative: &Path) -> Result<(), String> {
@@ -1342,27 +1320,6 @@ fn push_safe_relative_components(folder: &mut PathBuf, relative: &Path) -> Resul
     Ok(())
 }
 
-fn build_filename_pattern(
-    job: &ExportJobRecord,
-    asset: &ExportAssetRecord,
-    chain: &GainProcessingChain,
-) -> String {
-    job.filename_pattern
-        .replace("{name}", file_stem(&asset.name))
-        .replace("{asset_id}", &asset.id)
-        .replace("{format}", &job.format)
-        .replace("{scope}", &job.export_scope)
-        .replace(
-            "{region_start}",
-            &format_optional_seconds(job.region_start_seconds),
-        )
-        .replace(
-            "{region_end}",
-            &format_optional_seconds(job.region_end_seconds),
-        )
-        .replace("{gain}", &format!("{:.2}", chain.gain.gain_db))
-}
-
 fn output_extension(format: &str) -> &'static str {
     match format {
         "aac" | "m4a" => "m4a",
@@ -1372,13 +1329,6 @@ fn output_extension(format: &str) -> &'static str {
         "mp4" => "mp4",
         _ => "wav",
     }
-}
-
-fn file_stem(name: &str) -> &str {
-    Path::new(name)
-        .file_stem()
-        .and_then(|value| value.to_str())
-        .unwrap_or(name)
 }
 
 fn format_optional_seconds(value: Option<f64>) -> String {
@@ -1642,19 +1592,28 @@ fn copy_wav_region_export(
 }
 
 fn resolve_ffmpeg(resource_dir: Option<&Path>) -> Result<PathBuf, String> {
+    let executable = ffmpeg_executable_name();
     let mut candidates = Vec::new();
     if let Ok(path) = std::env::var("FFMPEG_PATH") {
         candidates.push(PathBuf::from(path));
     }
     if let Some(resource_dir) = resource_dir {
-        candidates.push(resource_dir.join("bin").join("ffmpeg.exe"));
+        candidates.push(resource_dir.join("bin").join(executable));
     }
-    candidates.push(PathBuf::from("src-tauri/bin/ffmpeg.exe"));
+    candidates.push(PathBuf::from("src-tauri/bin").join(executable));
     candidates.push(PathBuf::from("ffmpeg"));
     candidates
         .into_iter()
         .find(|candidate| candidate == Path::new("ffmpeg") || candidate.is_file())
         .ok_or_else(|| "FFmpeg sidecar was not found for this export format".to_string())
+}
+
+fn ffmpeg_executable_name() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "ffmpeg.exe"
+    } else {
+        "ffmpeg"
+    }
 }
 
 fn build_ffmpeg_args(
@@ -1702,7 +1661,7 @@ fn build_ffmpeg_args(
              [headsrc]atrim=start=0:end={crossfade_seconds:.6},asetpts=PTS-STARTPTS[head];\
              [tailsrc]atrim=start={body_end:.6}:end={duration:.6},asetpts=PTS-STARTPTS[tail];\
              [tail][head]acrossfade=d={crossfade_seconds:.6}:c1={tail_curve}:c2={head_curve}[xf];\
-             [base]atrim=start=0:end={body_end:.6},asetpts=PTS-STARTPTS[body];\
+             [base]atrim=start={crossfade_seconds:.6}:end={body_end:.6},asetpts=PTS-STARTPTS[body];\
              [body][xf]concat=n=2:v=0:a=1{volume}[out]"
         ));
         args.push("-map".to_string());
@@ -2182,7 +2141,7 @@ fn render_crossfaded_wav_loop_16_bit(
         for channel in 0..wav.channels as usize {
             let sample = if output_frame >= crossfade_start_frame {
                 let fade_frame = output_frame - crossfade_start_frame;
-                let denominator = fade_frames.max(1) as f32;
+                let denominator = fade_frames.saturating_sub(1).max(1) as f32;
                 let progress = fade_frame as f32 / denominator;
                 let head_weight = progress.powf(crossfade_slope as f32);
                 let tail_weight = 1.0 - head_weight;
@@ -2239,7 +2198,7 @@ fn render_crossfaded_pcm_loop_16_bit(
         for channel in 0..pcm.channels as usize {
             let sample = if output_frame >= crossfade_start_frame {
                 let fade_frame = output_frame - crossfade_start_frame;
-                let progress = fade_frame as f32 / fade_frames.max(1) as f32;
+                let progress = fade_frame as f32 / fade_frames.saturating_sub(1).max(1) as f32;
                 let head_weight = progress.powf(crossfade_slope as f32);
                 let tail_weight = 1.0 - head_weight;
                 let head = pcm.sample(start_frame + fade_frame, channel);
@@ -2803,24 +2762,6 @@ fn sanitize_file_stem(name: &str) -> String {
     }
 }
 
-fn sanitize_output_stem(name: &str) -> String {
-    let sanitized = name
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
-                character
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>();
-    if sanitized.is_empty() {
-        "export".to_string()
-    } else {
-        sanitized
-    }
-}
-
 fn make_id(prefix: &str) -> String {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -2866,7 +2807,7 @@ mod tests {
             asset_id: asset_id.to_string(),
             format: "wav".to_string(),
             output_folder: "F:/Exports".to_string(),
-            filename_pattern: "{name}_processed".to_string(),
+            filename_pattern: "{name}".to_string(),
             export_scope: "full".to_string(),
             region_start_seconds: None,
             region_end_seconds: None,
@@ -3062,7 +3003,7 @@ mod tests {
     }
 
     #[test]
-    fn builds_filename_pattern_and_ffmpeg_args() {
+    fn export_output_uses_original_name_and_ffmpeg_args() {
         let connection = test_connection();
         let source_path =
             std::env::temp_dir().join(format!("sonilabs_ffmpeg_args_{}.wav", std::process::id()));
@@ -3104,7 +3045,7 @@ mod tests {
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or_default()
-            .starts_with("fixture_region_0_250_0_750"));
+            .starts_with("fixture.ogg"));
         assert!(args
             .windows(2)
             .any(|pair| pair[0] == "-c:a" && pair[1] == "libvorbis"));
@@ -3112,6 +3053,144 @@ mod tests {
             .windows(2)
             .any(|pair| pair[0] == "-af" && pair[1] == "volume=3.00dB"));
         let _ = fs::remove_file(source_path);
+    }
+
+    #[test]
+    fn ffmpeg_crossfade_loop_matches_native_shortened_layout() {
+        let connection = test_connection();
+        let source_path = std::env::temp_dir().join(format!(
+            "sonilabs_ffmpeg_crossfade_args_{}.wav",
+            std::process::id()
+        ));
+        fs::write(&source_path, b"not-used-by-command-builder").expect("write temp source");
+        connection
+            .execute(
+                "UPDATE assets SET path_or_url = ?1 WHERE id = 'asset_test'",
+                params![source_path.to_string_lossy()],
+            )
+            .expect("update source path");
+        let mut input = test_export_input("asset_test");
+        input.format = "ogg".to_string();
+        input.export_scope = "region".to_string();
+        input.region_start_seconds = Some(0.25);
+        input.region_end_seconds = Some(0.75);
+        input.format_settings_json =
+            r#"{"oggQuality":7,"loopCrossfadeSeconds":0.05,"loopCrossfadeSlope":1.0}"#.to_string();
+        let snapshot = queue_export_job(&connection, input).expect("queue job");
+        let job = export_job_record(&connection, &snapshot.id).expect("read job");
+        let asset = export_asset(&connection, "asset_test").expect("asset");
+        let chain: GainProcessingChain = serde_json::from_str(&job.processing_json).expect("chain");
+        let settings =
+            parse_format_settings(&job.format, &job.format_settings_json).expect("settings");
+        let planned = plan_output_path(&job, &asset, &chain, &settings).expect("plan");
+        let args = build_ffmpeg_args(
+            Path::new("ffmpeg"),
+            &job,
+            &asset,
+            &chain,
+            &settings,
+            &planned.path,
+        )
+        .expect("ffmpeg args");
+        let filter = args
+            .windows(2)
+            .find_map(|pair| (pair[0] == "-filter_complex").then_some(pair[1].as_str()))
+            .expect("filter complex");
+
+        assert!(filter.contains("[base]atrim=start=0.050000:end=0.450000"));
+        assert!(!filter.contains("[base]atrim=start=0:end=0.450000"));
+        let _ = fs::remove_file(source_path);
+    }
+
+    #[test]
+    fn export_ignores_filename_pattern_and_does_not_rename_collisions() {
+        let connection = test_connection();
+        let output_dir =
+            std::env::temp_dir().join(format!("sonilabs_name_invariant_{}", std::process::id()));
+        fs::create_dir_all(&output_dir).expect("create output dir");
+        let existing = output_dir.join("fixture.mp3");
+        fs::write(&existing, b"existing").expect("write existing export");
+        let source_path = output_dir.join("fixture.wav");
+        fs::write(&source_path, b"not-used-by-planner").expect("write source");
+        connection
+            .execute(
+                "UPDATE assets SET path_or_url = ?1, name = 'fixture.wav' WHERE id = 'asset_test'",
+                params![source_path.to_string_lossy()],
+            )
+            .expect("update source path");
+        let mut input = test_export_input("asset_test");
+        input.format = "mp3".to_string();
+        input.output_folder = output_dir.to_string_lossy().to_string();
+        input.filename_pattern = "{name}_{scope}_{gain}".to_string();
+        input.overwrite_mode = "rename".to_string();
+        let snapshot = queue_export_job(&connection, input).expect("queue job");
+        let job = export_job_record(&connection, &snapshot.id).expect("read job");
+        let asset = export_asset(&connection, "asset_test").expect("asset");
+        let chain: GainProcessingChain = serde_json::from_str(&job.processing_json).expect("chain");
+        let settings =
+            parse_format_settings(&job.format, &job.format_settings_json).expect("settings");
+        let planned = plan_output_path(&job, &asset, &chain, &settings).expect("plan");
+
+        assert_eq!(planned.path, existing);
+        assert!(planned.skipped);
+        let _ = fs::remove_dir_all(output_dir);
+    }
+
+    #[test]
+    fn rendered_drag_export_reuses_clean_original_name() {
+        let connection = test_connection();
+        let temp_root = std::env::temp_dir().join(format!(
+            "sonilabs_drag_name_invariant_{}",
+            std::process::id()
+        ));
+        let fixture_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("test-fixtures")
+            .join("audio")
+            .join("short-tone.wav");
+        connection
+            .execute(
+                "UPDATE assets SET path_or_url = ?1, name = 'short-tone.wav', format = 'wav'
+                 WHERE id = 'asset_test'",
+                params![fixture_path.to_string_lossy()],
+            )
+            .expect("point asset at fixture");
+        let export_dir = temp_root.join("sonilabs-export-drag");
+        fs::create_dir_all(&export_dir).expect("create drag dir");
+        fs::write(export_dir.join("short-tone.wav"), b"stale").expect("write stale file");
+
+        let prepared = prepare_asset_drag_file(
+            &connection,
+            &temp_root,
+            None,
+            TempAssetDragExportInput {
+                asset_id: "asset_test".to_string(),
+                display_name: Some("short-tone.wav".to_string()),
+                format: "wav".to_string(),
+                export_scope: "full".to_string(),
+                region_start_seconds: None,
+                region_end_seconds: None,
+                loop_crossfade_seconds: None,
+                loop_crossfade_slope: None,
+                region_fade_gap_seconds: None,
+                region_fade_in_seconds: None,
+                region_fade_in_slope: None,
+                region_fade_out_seconds: None,
+                region_fade_out_slope: None,
+                format_settings_json: "{}".to_string(),
+                processing_json: test_processing_json(3.0),
+                processing_hash: "processing:gain:3.00".to_string(),
+            },
+        )
+        .expect("prepare rendered drag");
+
+        assert_eq!(
+            Path::new(&prepared.path)
+                .file_name()
+                .and_then(|name| name.to_str()),
+            Some("short-tone.wav")
+        );
+        let _ = fs::remove_dir_all(temp_root);
     }
 
     #[test]
@@ -3536,7 +3615,10 @@ mod tests {
             rms_window(&bytes, &wav, frame_count - window)
                 < rms_window(&plain_bytes, &plain_wav, frame_count - window) * 0.5
         );
-        assert_eq!(read_wav_sample(&bytes, &wav, 0, 0).expect("first sample"), 0.0);
+        assert_eq!(
+            read_wav_sample(&bytes, &wav, 0, 0).expect("first sample"),
+            0.0
+        );
         assert_eq!(
             read_wav_sample(&bytes, &wav, frame_count - 1, 0).expect("last sample"),
             0.0

@@ -2,9 +2,10 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 
+const sidecarName = process.platform === "win32" ? "audiowaveform.exe" : "audiowaveform";
 const candidates = [
   process.env.AUDIOWAVEFORM_PATH,
-  path.resolve("src-tauri", "bin", "audiowaveform.exe"),
+  path.resolve("src-tauri", "bin", sidecarName),
   "audiowaveform",
 ].filter(Boolean);
 
@@ -21,6 +22,6 @@ for (const candidate of candidates) {
 }
 
 console.error(
-  "audiowaveform not found. Set AUDIOWAVEFORM_PATH, add audiowaveform to PATH, or place audiowaveform.exe in src-tauri/bin.",
+  `audiowaveform not found. Set AUDIOWAVEFORM_PATH, add audiowaveform to PATH, or place ${sidecarName} in src-tauri/bin.`,
 );
 process.exit(1);

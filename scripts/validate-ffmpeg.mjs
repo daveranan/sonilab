@@ -3,9 +3,10 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 
 const minimumVersion = process.env.FFMPEG_MIN_VERSION ?? "6.0";
+const sidecarName = process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg";
 const candidates = [
   process.env.FFMPEG_PATH,
-  path.resolve("src-tauri", "bin", "ffmpeg.exe"),
+  path.resolve("src-tauri", "bin", sidecarName),
   "ffmpeg",
 ].filter(Boolean);
 
@@ -74,6 +75,6 @@ for (const candidate of candidates) {
 }
 
 console.error(
-  "FFmpeg not found. Set FFMPEG_PATH, add ffmpeg to PATH, or place ffmpeg.exe in src-tauri/bin.",
+  `FFmpeg not found. Set FFMPEG_PATH, add ffmpeg to PATH, or place ${sidecarName} in src-tauri/bin.`,
 );
 process.exit(1);

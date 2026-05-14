@@ -172,6 +172,7 @@ const SPARSE_WAVEFORM_FILE_BYTES: u64 = 8 * 1024 * 1024;
 const SPARSE_WINDOWS_PER_PEAK: usize = 4;
 const SPARSE_FRAMES_PER_WINDOW: usize = 512;
 const BINARY_WAVEFORM_MAGIC: &[u8; 8] = b"SLWAVE1\0";
+const WAVEFORM_DEADLINE_SECONDS: u64 = 20 * 60;
 
 struct AudioJobRegistration<'a> {
     registry: &'a CancellationRegistry,
@@ -266,7 +267,7 @@ pub fn get_waveform_peaks(
         registry: &runtime.cancellations,
         job_id,
     };
-    let deadline = JobDeadline::new(std::time::Duration::from_secs(180));
+    let deadline = JobDeadline::new(std::time::Duration::from_secs(WAVEFORM_DEADLINE_SECONDS));
 
     if let Some(mut cached) = cached_waveform(
         connection,
@@ -350,7 +351,7 @@ pub fn get_waveform_peaks_with_sidecar(
             .unwrap_or(false);
 
     if is_large_wav {
-        let sidecar_result = {
+        let sparse_result = {
             let _permit = runtime.waveform_queue.try_enter()?;
             let token = CancellationToken::default();
             let job_id = format!("waveform:{asset_id}");
@@ -361,20 +362,22 @@ pub fn get_waveform_peaks_with_sidecar(
                 registry: &runtime.cancellations,
                 job_id,
             };
-            let deadline = JobDeadline::new(std::time::Duration::from_secs(180));
-            generate_audiowaveform_peaks(
-                connection,
-                cache_root,
-                resource_dir,
-                &asset,
+            let deadline =
+                JobDeadline::new(std::time::Duration::from_secs(WAVEFORM_DEADLINE_SECONDS));
+            let mut peaks = generate_wav_peaks_sparse(
+                Path::new(&asset.path_or_url),
+                asset_id,
                 content_key,
                 channel_mode,
                 samples_per_peak,
                 &token,
                 &deadline,
-            )
+            )?;
+            let waveform_dir = cache_root.join("waveforms");
+            cache_waveform_file(connection, &waveform_dir, &mut peaks)?;
+            Ok::<WaveformPeakData, String>(peaks)
         };
-        match sidecar_result {
+        match sparse_result {
             Ok(peaks) => return Ok(peaks),
             Err(error) if error.contains("cancelled") => return Err(error),
             Err(_) => {
@@ -424,7 +427,8 @@ pub fn get_waveform_peaks_with_sidecar(
                 registry: &runtime.cancellations,
                 job_id,
             };
-            let deadline = JobDeadline::new(std::time::Duration::from_secs(180));
+            let deadline =
+                JobDeadline::new(std::time::Duration::from_secs(WAVEFORM_DEADLINE_SECONDS));
             generate_audiowaveform_peaks(
                 connection,
                 cache_root,
@@ -1013,19 +1017,28 @@ fn generate_audiowaveform_peaks(
 }
 
 fn resolve_audiowaveform(resource_dir: Option<&Path>) -> Result<PathBuf, String> {
+    let executable = audiowaveform_executable_name();
     let mut candidates = Vec::new();
     if let Ok(path) = std::env::var("AUDIOWAVEFORM_PATH") {
         candidates.push(PathBuf::from(path));
     }
     if let Some(resource_dir) = resource_dir {
-        candidates.push(resource_dir.join("bin").join("audiowaveform.exe"));
+        candidates.push(resource_dir.join("bin").join(executable));
     }
-    candidates.push(PathBuf::from("src-tauri/bin/audiowaveform.exe"));
+    candidates.push(PathBuf::from("src-tauri/bin").join(executable));
     candidates.push(PathBuf::from("audiowaveform"));
     candidates
         .into_iter()
         .find(|candidate| candidate == Path::new("audiowaveform") || candidate.is_file())
         .ok_or_else(|| "audiowaveform sidecar was not found".to_string())
+}
+
+fn audiowaveform_executable_name() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "audiowaveform.exe"
+    } else {
+        "audiowaveform"
+    }
 }
 
 fn run_audiowaveform(
@@ -2311,6 +2324,51 @@ mod tests {
         assert!(legacy_cached.is_some());
         assert!(file_cached.is_none());
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn large_wav_generation_writes_binary_waveform_cache() {
+        let connection = test_connection();
+        let path = std::env::temp_dir().join(format!(
+            "sonilabs_large_waveform_native_{}.wav",
+            std::process::id()
+        ));
+        fs::write(&path, wav_bytes(1, 16, 2, vec![0, 0, 0, 0])).expect("write wav header");
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .expect("open large wav")
+            .set_len(SPARSE_WAVEFORM_FILE_BYTES + 1024)
+            .expect("extend large wav");
+        let cache_root =
+            std::env::temp_dir().join(format!("sonilabs_waveform_cache_{}", std::process::id()));
+        let asset_id = insert_large_wav_asset(&connection, &path);
+        let runtime = test_runtime();
+
+        let peaks = get_waveform_peaks_with_sidecar(
+            &runtime,
+            &connection,
+            &cache_root,
+            None,
+            &asset_id,
+            "large-key",
+            "source",
+            512,
+        )
+        .expect("generate sparse large wav peaks");
+        let cached = get_cached_waveform_peaks_with_files(
+            &connection,
+            &asset_id,
+            "large-key",
+            "source",
+            512,
+        )
+        .expect("read cached large wav peaks");
+
+        assert!(!peaks.peak_file_path.is_empty());
+        assert!(cached.is_some());
+        let _ = fs::remove_file(path);
+        let _ = fs::remove_dir_all(cache_root);
     }
 
     #[test]

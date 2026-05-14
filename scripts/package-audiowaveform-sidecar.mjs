@@ -4,10 +4,11 @@ import { spawnSync } from "node:child_process";
 
 const source = process.env.AUDIOWAVEFORM_PATH;
 const sidecarDir = path.resolve("src-tauri", "bin");
-const sidecarPath = path.join(sidecarDir, "audiowaveform.exe");
+const sidecarName = process.platform === "win32" ? "audiowaveform.exe" : "audiowaveform";
+const sidecarPath = path.join(sidecarDir, sidecarName);
 
 if (!source) {
-  console.error("Set AUDIOWAVEFORM_PATH to the audiowaveform.exe to stage.");
+  console.error(`Set AUDIOWAVEFORM_PATH to the ${sidecarName} binary to stage.`);
   process.exit(1);
 }
 
