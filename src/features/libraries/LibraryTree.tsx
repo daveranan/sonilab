@@ -23,6 +23,7 @@ import { toggleExpandedNodeIds } from "./treeExpansion";
 
 type LibraryTreeProps = {
   expandedIds?: string[];
+  checkedSourceIds?: string[];
   nodes: LibraryNode[];
   onExpandedIdsChange?: (ids: string[]) => void;
   onOpenNode?: (node: LibraryNode) => void;
@@ -33,6 +34,7 @@ type LibraryTreeProps = {
   onRemoveFailedNode?: (node: LibraryNode) => void;
   onRetryFailedNode?: (node: LibraryNode) => void;
   onSearchNode?: (node: LibraryNode) => void;
+  onSourceCheckedChange?: (sourceId: string, checked: boolean) => void;
   onCheckOnlyNode?: (node: LibraryNode) => void;
   onRenameNode?: (node: LibraryNode) => void;
   onToggleMonitorNode?: (node: LibraryNode) => void;
@@ -60,6 +62,7 @@ function TreeNode({
   onRemoveFailedNode,
   onRetryFailedNode,
   onSearchNode,
+  onSourceCheckedChange,
   onCheckOnlyNode,
   onRenameNode,
   onToggleMonitorNode,
@@ -67,6 +70,7 @@ function TreeNode({
   onOpenSourceSettings,
   onCopyPath,
   inheritedRootUri,
+  checkedSourceIds,
 }: {
   node: LibraryNode;
   depth: number;
@@ -80,6 +84,7 @@ function TreeNode({
   onRemoveFailedNode?: (node: LibraryNode) => void;
   onRetryFailedNode?: (node: LibraryNode) => void;
   onSearchNode?: (node: LibraryNode) => void;
+  onSourceCheckedChange?: (sourceId: string, checked: boolean) => void;
   onCheckOnlyNode?: (node: LibraryNode) => void;
   onRenameNode?: (node: LibraryNode) => void;
   onToggleMonitorNode?: (node: LibraryNode) => void;
@@ -87,6 +92,7 @@ function TreeNode({
   onOpenSourceSettings?: (node: LibraryNode) => void;
   onCopyPath?: (node: LibraryNode, path: string) => void;
   inheritedRootUri?: string;
+  checkedSourceIds?: Set<string>;
 }) {
   const hasChildren = Boolean(node.children?.length);
   const isExpanded = expanded.has(node.id);
@@ -113,6 +119,8 @@ function TreeNode({
     (node.kind === "folder" && Boolean(node.folderId)) ||
     (node.kind === "source" && Boolean(node.rootUri));
   const canOpenPath = Boolean(nodePath) || canOpenInExplorer;
+  const sourceId = node.sourceId ?? (node.kind === "source" ? node.id : undefined);
+  const showSourceCheckbox = node.kind === "source" && Boolean(sourceId);
 
   return (
     <>
@@ -141,6 +149,18 @@ function TreeNode({
             ) : (
               <span className="w-4 shrink-0" />
             )}
+            {showSourceCheckbox ? (
+              <input
+                checked={checkedSourceIds?.has(sourceId!) ?? true}
+                className="size-3.5 shrink-0 accent-primary"
+                onChange={(event) =>
+                  onSourceCheckedChange?.(sourceId!, event.currentTarget.checked)
+                }
+                onClick={(event) => event.stopPropagation()}
+                title="Include this library in Local search"
+                type="checkbox"
+              />
+            ) : null}
             <Icon className="size-3.5 shrink-0" />
             <button
               className="min-w-0 flex-1 truncate text-left"
@@ -272,6 +292,7 @@ function TreeNode({
               key={child.id}
               node={child}
               inheritedRootUri={rootUri}
+              checkedSourceIds={checkedSourceIds}
               onAddFolderToCollection={onAddFolderToCollection}
               onCopyPath={onCopyPath}
               onDeleteNode={onDeleteNode}
@@ -285,6 +306,7 @@ function TreeNode({
               onRenameNode={onRenameNode}
               onRetryFailedNode={onRetryFailedNode}
               onSearchNode={onSearchNode}
+              onSourceCheckedChange={onSourceCheckedChange}
               onToggleMonitorNode={onToggleMonitorNode}
               toggle={toggle}
             />
@@ -296,6 +318,7 @@ function TreeNode({
 
 export function LibraryTree({
   expandedIds,
+  checkedSourceIds,
   nodes,
   onExpandedIdsChange,
   onOpenNode,
@@ -306,6 +329,7 @@ export function LibraryTree({
   onRemoveFailedNode,
   onRetryFailedNode,
   onSearchNode,
+  onSourceCheckedChange,
   onCheckOnlyNode,
   onRenameNode,
   onToggleMonitorNode,
@@ -318,6 +342,7 @@ export function LibraryTree({
       new Set(["libraries-local", "local-main", "all-tags", "local-tags", "user-tags"]),
   );
   const expanded = new Set(expandedIds ?? [...internalExpanded]);
+  const checkedSources = checkedSourceIds ? new Set(checkedSourceIds) : undefined;
 
   function setExpandedIds(ids: Set<string>) {
     if (expandedIds === undefined) setInternalExpanded(ids);
@@ -330,6 +355,7 @@ export function LibraryTree({
         <TreeNode
           depth={0}
           expanded={expanded}
+          checkedSourceIds={checkedSources}
           key={node.id}
           node={node}
           onAddFolderToCollection={onAddFolderToCollection}
@@ -345,6 +371,7 @@ export function LibraryTree({
           onRenameNode={onRenameNode}
           onRetryFailedNode={onRetryFailedNode}
           onSearchNode={onSearchNode}
+          onSourceCheckedChange={onSourceCheckedChange}
           onToggleMonitorNode={onToggleMonitorNode}
           toggle={(node, recursive) =>
             setExpandedIds(new Set(toggleExpandedNodeIds(expanded, node, recursive)))

@@ -50,8 +50,8 @@ export const browseColumns: BrowseColumn[] = [
   {
     id: "source",
     label: "Library",
-    defaultWidth: 260,
-    minWidth: 120,
+    defaultWidth: 360,
+    minWidth: 180,
     sortKey: "source",
   },
 ];

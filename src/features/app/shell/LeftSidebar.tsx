@@ -34,6 +34,7 @@ export function LeftSidebar({
   libraries,
   collections,
   activity,
+  enabledLocalSourceIds,
   collectionExpandedIds,
   libraryExpandedIds,
   width = 280,
@@ -49,6 +50,7 @@ export function LeftSidebar({
   onRemoveFailedLibraryNode,
   onRetryFailedLibraryNode,
   onSearchLibraryNode,
+  onSourceEnabledChange,
   onCheckOnlyLibraryNode,
   onRenameLibraryNode,
   onToggleMonitorLibraryNode,
@@ -77,6 +79,7 @@ export function LeftSidebar({
   libraries: LibraryNode[];
   collections: CollectionNode[];
   activity: ActivityRow[];
+  enabledLocalSourceIds?: string[];
   collectionExpandedIds?: string[];
   libraryExpandedIds?: string[];
   width?: number;
@@ -92,6 +95,7 @@ export function LeftSidebar({
   onRemoveFailedLibraryNode?: (node: LibraryNode) => void;
   onRetryFailedLibraryNode?: (node: LibraryNode) => void;
   onSearchLibraryNode?: (node: LibraryNode) => void;
+  onSourceEnabledChange?: (sourceId: string, checked: boolean) => void;
   onCheckOnlyLibraryNode?: (node: LibraryNode) => void;
   onRenameLibraryNode?: (node: LibraryNode) => void;
   onToggleMonitorLibraryNode?: (node: LibraryNode) => void;
@@ -167,6 +171,7 @@ export function LeftSidebar({
           <LibraryTree
             expandedIds={libraryExpandedIds}
             nodes={libraries}
+            checkedSourceIds={enabledLocalSourceIds}
             onExpandedIdsChange={onLibraryExpandedIdsChange}
             onAddFolderToCollection={onAddLibraryFolderToCollection}
             onCopyPath={onCopyLibraryPath}
@@ -181,6 +186,7 @@ export function LeftSidebar({
             onRenameNode={onRenameLibraryNode}
             onRetryFailedNode={onRetryFailedLibraryNode}
             onSearchNode={onSearchLibraryNode}
+            onSourceCheckedChange={onSourceEnabledChange}
             onToggleMonitorNode={onToggleMonitorLibraryNode}
           />
         </section>

@@ -684,6 +684,7 @@ export async function startPreparedFilesDrag(
     pluginStartDrag?: PluginStartDrag;
     nativeFallback?: NativeFileDragFallback;
     icon?: string;
+    preferNative?: boolean;
   } = {},
 ): Promise<NativeFileDragResponse> {
   const paths = filePaths.filter((path) => path.trim().length > 0);
@@ -698,6 +699,54 @@ export async function startPreparedFilesDrag(
 
   const pluginStartDrag = options.pluginStartDrag ?? startCrabnebulaDrag;
   const nativeFallback = options.nativeFallback ?? invokeNativeFileDrag;
+  if (options.preferNative) {
+    try {
+      const native = await nativeFallback(paths);
+      if (native.ok) return native;
+      return {
+        ...native,
+        diagnostics: [
+          "Native file drag was preferred for rendered export files.",
+          ...native.diagnostics,
+        ],
+      };
+    } catch (nativeError) {
+      try {
+        let dragResult: PluginDragResult | null = null;
+        await pluginStartDrag(
+          {
+            item: paths,
+            icon: options.icon ?? transparentDragIcon,
+            mode: "copy",
+          },
+          (event) => {
+            dragResult = event.result;
+          },
+        );
+        if (dragResult === "Cancel" || dragResult === "Cancelled") {
+          return pluginCancelledResponse();
+        }
+        return {
+          ok: true,
+          effect: "copy",
+          error: undefined,
+          diagnostics: [
+            `Native file drag failed: ${errorMessage(nativeError)}`,
+            `CrabNebula drag-rs plugin started drag for ${paths.length} file(s).`,
+          ],
+        };
+      } catch (pluginError) {
+        return {
+          ok: false,
+          effect: "none",
+          error: `Native file drag failed: ${errorMessage(nativeError)}`,
+          diagnostics: [
+            `CrabNebula drag-rs plugin also failed: ${errorMessage(pluginError)}`,
+          ],
+        };
+      }
+    }
+  }
   try {
     let dragResult: PluginDragResult | null = null;
     await pluginStartDrag(

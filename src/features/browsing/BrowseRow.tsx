@@ -37,6 +37,7 @@ type BrowseRowProps = {
   onInternalDragStart?: (event: React.DragEvent, row: BrowseRowModel) => void;
   onAddToCollection?: (row: BrowseRowModel) => void;
   onOpenInExplorer?: (row: BrowseRowModel) => void;
+  onGoToFolder?: (row: BrowseRowModel) => void;
   onDeleteRow?: (row: BrowseRowModel) => void;
 };
 
@@ -126,6 +127,7 @@ function BrowseRowComponent({
   onAddToCollection,
   onAssetFileDragRequest,
   onDeleteRow,
+  onGoToFolder,
   onInternalDragStart,
   onOpenInExplorer,
 }: BrowseRowProps) {
@@ -142,8 +144,10 @@ function BrowseRowComponent({
     row.kind === "asset" ? (metadata?.headroomDb ?? row.headroomDb) : null;
   const libraryLabel =
     row.kind === "folder"
-      ? row.path
-      : containingFolderPath(row.relativePath) || row.sourceName;
+      ? sourcePathLabel(row.sourceName, row.path)
+      : sourcePathLabel(row.sourceName, row.folderPath ?? containingFolderPath(row.relativePath));
+  const rowTitle =
+    row.kind === "folder" ? (row.fullPath ?? row.path) : (row.fullPath ?? row.relativePath);
 
   const deleteLabel =
     selected && selectedCount > 1
@@ -211,7 +215,21 @@ function BrowseRowComponent({
       case "headroom":
         return <Cell priority="metric">{db(headroomDb)}</Cell>;
       case "source":
-        return <Cell priority="primary">{libraryLabel}</Cell>;
+        return (
+          <Cell priority="primary">
+            <button
+              className="min-w-0 truncate text-left text-foreground underline-offset-2 hover:underline"
+              onClick={(event) => {
+                event.stopPropagation();
+                onGoToFolder?.(row);
+              }}
+              title={rowTitle}
+              type="button"
+            >
+              {libraryLabel}
+            </button>
+          </Cell>
+        );
       case "license":
         return <LicenseValue value={row.license} />;
       case "originator":
@@ -299,7 +317,7 @@ function BrowseRowComponent({
         height: `${height}px`,
         transform: `translateY(${top}px)`,
       }}
-      title={isFolder ? row.path : row.relativePath}
+      title={rowTitle}
     >
       {columns.map((column) => (
         <span className="flex min-w-0 max-w-full overflow-hidden" key={column.id}>
@@ -315,6 +333,9 @@ function BrowseRowComponent({
       <ContextMenuContent>
         <ContextMenuItem onSelect={() => onOpenInExplorer?.(row)}>
           {isFolder ? "Open folder in Explorer" : "Show in Explorer"}
+        </ContextMenuItem>
+        <ContextMenuItem onSelect={() => onGoToFolder?.(row)}>
+          Go to folder
         </ContextMenuItem>
         <ContextMenuItem onSelect={() => onAddToCollection?.(row)}>
           Add to collection
@@ -334,4 +355,10 @@ function BrowseRowComponent({
 export const BrowseRow = memo(BrowseRowComponent);
 function containingFolderPath(path: string): string {
   return path.replace(/\\/g, "/").split("/").slice(0, -1).join("/");
+}
+
+function sourcePathLabel(sourceName: string | undefined, folderPath: string): string {
+  const path = folderPath.replace(/\\/g, "/").replace(/^\/+/, "");
+  if (!sourceName) return path;
+  return path ? `${sourceName} / ${path}` : sourceName;
 }

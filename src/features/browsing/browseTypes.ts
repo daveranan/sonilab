@@ -2,7 +2,8 @@ export type SourceScope =
   | { kind: "all" }
   | { kind: "local" }
   | { kind: "cloud"; provider?: string }
-  | { kind: "source"; sourceId: string };
+  | { kind: "source"; sourceId: string }
+  | { kind: "sources"; sourceIds: string[] };
 
 export type SearchFilterField =
   | "tag"
@@ -154,7 +155,10 @@ export type BrowseRow =
       name: string;
       childCount: number | null;
       sourceId: string;
+      sourceName?: string;
+      sourceRootUri?: string;
       path: string;
+      fullPath?: string;
       status: "indexed" | "indexing" | "partial" | "error";
     }
   | {
@@ -173,7 +177,12 @@ export type BrowseRow =
       clipping: boolean | null;
       headroomDb: number | null;
       sourceName: string;
+      sourceId?: string;
+      sourceRootUri?: string;
       provider: string | null;
+      folderId?: string | null;
+      folderPath?: string | null;
+      fullPath?: string;
       relativePath: string;
       license: string | null;
       metadataFile: string | null;

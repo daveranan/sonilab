@@ -1072,7 +1072,10 @@ fn generate_ffmpeg_wav_peaks(
         Ok(output) => {
             let _ = fs::remove_file(&wav_path);
             let detail = String::from_utf8_lossy(&output.stderr);
-            return Err(format!("ffmpeg waveform conversion failed: {}", detail.trim()));
+            return Err(format!(
+                "ffmpeg waveform conversion failed: {}",
+                detail.trim()
+            ));
         }
         Err(error) => {
             let _ = fs::remove_file(&wav_path);

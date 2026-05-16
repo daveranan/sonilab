@@ -46,6 +46,7 @@ type BrowseTableProps = {
   onInternalDragStart?: (event: React.DragEvent, row: BrowseRowModel) => void;
   onAddToCollection?: (row: BrowseRowModel) => void;
   onOpenInExplorer?: (row: BrowseRowModel) => void;
+  onGoToFolder?: (row: BrowseRowModel) => void;
   onDeleteRow?: (row: BrowseRowModel) => void;
   sort?: SearchSort;
   onSortChange?: (sort: SearchSort) => void;
@@ -128,6 +129,7 @@ export function BrowseTable({
   onAddToCollection,
   onDeleteRow,
   onOpenInExplorer,
+  onGoToFolder,
   onOpenFolder,
   onInternalDragStart,
   onSortChange,
@@ -439,6 +441,7 @@ export function BrowseTable({
                   onDeleteRow={onDeleteRow}
                   onInternalDragStart={onInternalDragStart}
                   onOpenInExplorer={onOpenInExplorer}
+                  onGoToFolder={onGoToFolder}
                   previewed={previewedRowIds.has(row.id)}
                   row={row}
                   selected={selectedRowIds.has(row.id)}

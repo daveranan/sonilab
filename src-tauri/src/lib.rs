@@ -95,6 +95,7 @@ struct LocalFolderRegistration {
 struct BrowseSourceScopeInput {
     kind: String,
     source_id: Option<String>,
+    source_ids: Option<Vec<String>>,
     provider: Option<String>,
 }
 
@@ -154,7 +155,10 @@ enum DatabaseBrowseRow {
         name: String,
         child_count: Option<i64>,
         source_id: String,
+        source_name: String,
+        source_root_uri: String,
         path: String,
+        full_path: String,
         status: String,
     },
     #[serde(rename = "asset", rename_all = "camelCase")]
@@ -173,7 +177,12 @@ enum DatabaseBrowseRow {
         clipping: Option<bool>,
         headroom_db: Option<f64>,
         source_name: String,
+        source_id: String,
+        source_root_uri: String,
         provider: Option<String>,
+        folder_id: Option<String>,
+        folder_path: Option<String>,
+        full_path: String,
         relative_path: String,
         license: Option<String>,
         metadata_file: Option<String>,
@@ -203,6 +212,7 @@ struct DbAssetBrowseRecord {
     clipping_samples: Option<i64>,
     headroom_db: Option<f64>,
     source_name: String,
+    source_root_uri: String,
     provider: String,
     path_or_url: String,
     license: Option<String>,
@@ -213,6 +223,7 @@ struct DbAssetBrowseRecord {
     tags: Vec<String>,
     availability: String,
     favorite: bool,
+    folder_id: Option<String>,
     folder_path: Option<String>,
     metadata_json: String,
 }
@@ -747,6 +758,15 @@ fn browse_database(
     let mut rows = Vec::new();
     if query.trim().is_empty() {
         for source_id in &source_ids {
+            let source = repo.get_source(source_id)?;
+            let source_name = source
+                .as_ref()
+                .map(|source| source.display_name.clone())
+                .unwrap_or_else(|| source_id.clone());
+            let source_root_uri = source
+                .as_ref()
+                .map(|source| source.root_uri.clone())
+                .unwrap_or_default();
             let folders = repo.list_folders(source_id)?;
             let assets = browse_assets_for_source(repo.connection(), source_id)?;
             if request.favorite_filter.is_none() {
@@ -759,7 +779,10 @@ fn browse_database(
                         name: folder.name.clone(),
                         child_count: Some(child_count(&folders, &assets, &folder.path)),
                         source_id: folder.source_id.clone(),
+                        source_name: source_name.clone(),
+                        source_root_uri: source_root_uri.clone(),
                         path: folder.path.clone(),
+                        full_path: folder_full_path(&source_root_uri, &folder.path),
                         status: folder_status(&folder.indexed_status),
                     });
                 }
@@ -2095,6 +2118,11 @@ fn browse_source_ids(
                 .as_deref()
                 .map(|source_id| source.id == source_id)
                 .unwrap_or(false),
+            "sources" => scope
+                .source_ids
+                .as_ref()
+                .map(|source_ids| source_ids.iter().any(|source_id| source.id == *source_id))
+                .unwrap_or(false),
             _ => false,
         })
         .map(|source| source.id)
@@ -2645,7 +2673,7 @@ fn asset_browse_sql(predicate: &str) -> String {
                 a.byte_size,
                 NULL AS peak_dbfs, NULL AS rms_dbfs, NULL AS clipping_samples,
                 NULL AS headroom_db,
-                s.display_name, s.provider, a.path_or_url, a.license,
+                s.display_name, s.root_uri, s.provider, a.path_or_url, a.license,
                 s.settings_json, a.originator, a.attribution, a.description,
                 COALESCE(
                     (
@@ -2658,7 +2686,7 @@ fn asset_browse_sql(predicate: &str) -> String {
                     ),
                     '[]'
                 ) AS tags_json,
-                a.availability, COALESCE(facet.favorite, 0), f.path, a.metadata_json
+                a.availability, COALESCE(facet.favorite, 0), f.id, f.path, a.metadata_json
          FROM assets AS a
          JOIN sources AS s ON s.id = a.source_id
          LEFT JOIN folders AS f ON f.id = a.folder_id
@@ -2685,18 +2713,20 @@ fn db_asset_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<DbAssetBrowseR
         clipping_samples: row.get(12)?,
         headroom_db: row.get(13)?,
         source_name: row.get(14)?,
-        provider: row.get(15)?,
-        path_or_url: row.get(16)?,
-        license: row.get(17)?,
-        source_settings_json: row.get(18)?,
-        originator: row.get(19)?,
-        attribution: row.get(20)?,
-        description: row.get(21)?,
-        tags: serde_json::from_str::<Vec<String>>(&row.get::<_, String>(22)?).unwrap_or_default(),
-        availability: row.get(23)?,
-        favorite: row.get::<_, i64>(24)? == 1,
-        folder_path: row.get(25)?,
-        metadata_json: row.get(26)?,
+        source_root_uri: row.get(15)?,
+        provider: row.get(16)?,
+        path_or_url: row.get(17)?,
+        license: row.get(18)?,
+        source_settings_json: row.get(19)?,
+        originator: row.get(20)?,
+        attribution: row.get(21)?,
+        description: row.get(22)?,
+        tags: serde_json::from_str::<Vec<String>>(&row.get::<_, String>(23)?).unwrap_or_default(),
+        availability: row.get(24)?,
+        favorite: row.get::<_, i64>(25)? == 1,
+        folder_id: row.get(26)?,
+        folder_path: row.get(27)?,
+        metadata_json: row.get(28)?,
     })
 }
 
@@ -2836,6 +2866,14 @@ fn source_metadata_file(settings_json: &str) -> Option<String> {
         })
 }
 
+fn folder_full_path(root_uri: &str, folder_path: &str) -> String {
+    let mut path = PathBuf::from(root_uri);
+    for part in folder_path.split('/').filter(|part| !part.is_empty()) {
+        path.push(part);
+    }
+    path.to_string_lossy().to_string()
+}
+
 fn folder_status(status: &str) -> String {
     match status {
         "indexing" => "indexing",
@@ -2882,7 +2920,12 @@ fn asset_browse_row(asset: DbAssetBrowseRecord) -> DatabaseBrowseRow {
         clipping: asset.clipping_samples.map(|count| count > 0),
         headroom_db: asset.headroom_db,
         source_name: asset.source_name,
+        source_id: asset.source_id,
+        source_root_uri: asset.source_root_uri,
         provider: Some(asset.provider),
+        folder_id: asset.folder_id,
+        folder_path: asset.folder_path,
+        full_path: asset.path_or_url,
         relative_path,
         license: asset.license,
         metadata_file,

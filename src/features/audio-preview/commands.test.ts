@@ -100,6 +100,26 @@ describe("export file drag command helper", () => {
     expect(result.diagnostics[0]).toContain("plugin unavailable");
   });
 
+  it("uses native COM drag first for rendered export files when requested", async () => {
+    const pluginStartDrag = vi.fn();
+    const nativeFallback = vi.fn(async () => ({
+      ok: true,
+      effect: "copy" as const,
+      error: undefined,
+      diagnostics: ["native"],
+    }));
+
+    const result = await startPreparedFilesDrag(["C:\\tmp\\rendered.ogg"], {
+      pluginStartDrag,
+      nativeFallback,
+      preferNative: true,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(nativeFallback).toHaveBeenCalledWith(["C:\\tmp\\rendered.ogg"]);
+    expect(pluginStartDrag).not.toHaveBeenCalled();
+  });
+
   it("sends crossfade and fade controls in queued export settings", async () => {
     invokeMock.mockResolvedValueOnce([]);
 

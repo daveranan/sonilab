@@ -767,6 +767,17 @@ pub fn prepare_asset_drag_file(
     let deadline = JobDeadline::new(Duration::from_secs(5 * 60));
     if should_use_native_wav(&job, &asset, &settings) {
         render_native_wav_export(&job, &asset, &chain, &output_path, &token, &deadline)?;
+    } else if should_use_native_wav_intermediate(&job, &asset) {
+        render_native_wav_intermediate_export(
+            &job,
+            &asset,
+            &chain,
+            &settings,
+            &output_path,
+            resource_dir,
+            &token,
+            &deadline,
+        )?;
     } else {
         let ffmpeg = resolve_ffmpeg(resource_dir)?;
         let args = build_ffmpeg_args(&ffmpeg, &job, &asset, &chain, &settings, &output_path)?;
@@ -786,6 +797,7 @@ pub fn prepare_asset_drag_file(
             ));
         }
     }
+    verify_rendered_drag_file(&output_path, &input.format)?;
 
     Ok(PreparedRegionDragFile {
         asset_id: input.asset_id,
@@ -988,6 +1000,7 @@ fn prepare_mock_drag_file(
                 String::from_utf8_lossy(&output.stderr).trim()
             ));
         }
+        verify_rendered_drag_file(&output_path, &input.format)?;
         output_path
     };
     Ok(PreparedRegionDragFile {
@@ -998,6 +1011,18 @@ fn prepare_mock_drag_file(
         region_end_seconds: input.region_end_seconds.unwrap_or(0.0),
         processing_hash: input.processing_hash,
     })
+}
+
+fn verify_rendered_drag_file(output_path: &Path, format: &str) -> Result<(), String> {
+    let metadata = fs::metadata(output_path)
+        .map_err(|error| format!("rendered {format} drag file is missing: {error}"))?;
+    if metadata.len() == 0 {
+        return Err(format!(
+            "rendered {format} drag file is empty: {}",
+            output_path.display()
+        ));
+    }
+    Ok(())
 }
 
 fn validate_gain_processing_chain(
@@ -1331,12 +1356,6 @@ fn output_extension(format: &str) -> &'static str {
     }
 }
 
-fn format_optional_seconds(value: Option<f64>) -> String {
-    value
-        .map(|seconds| format!("{seconds:.3}"))
-        .unwrap_or_else(|| "full".to_string())
-}
-
 fn should_use_native_wav(
     job: &ExportJobRecord,
     asset: &ExportAssetRecord,
@@ -1351,6 +1370,101 @@ fn should_use_native_wav(
         && settings.wav_bit_depth.unwrap_or(16) == 16
         && settings.wav_sample_rate.is_none()
         && matches!(source_format.as_str(), "wav" | "wave")
+}
+
+fn should_use_native_wav_intermediate(job: &ExportJobRecord, asset: &ExportAssetRecord) -> bool {
+    let source_format = asset
+        .format
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    job.format != "wav"
+        && job.export_scope == "region"
+        && matches!(source_format.as_str(), "wav" | "wave")
+        && (job.loop_crossfade_seconds.unwrap_or(0.0) > 0.0
+            || normalized_region_fade_seconds(job) != (0.0, 0.0))
+}
+
+fn render_native_wav_intermediate_export(
+    job: &ExportJobRecord,
+    asset: &ExportAssetRecord,
+    chain: &GainProcessingChain,
+    settings: &FormatSettings,
+    output_path: &Path,
+    resource_dir: Option<&Path>,
+    token: &CancellationToken,
+    deadline: &JobDeadline,
+) -> Result<(), String> {
+    let intermediate_path = output_path.with_extension("render.wav");
+    if intermediate_path.is_file() {
+        fs::remove_file(&intermediate_path).map_err(|error| error.to_string())?;
+    }
+    render_native_wav_export(job, asset, chain, &intermediate_path, token, deadline)?;
+    let intermediate_asset = ExportAssetRecord {
+        source_root_uri: asset.source_root_uri.clone(),
+        path_or_url: intermediate_path.to_string_lossy().to_string(),
+        name: asset.name.clone(),
+        format: Some("wav".to_string()),
+        relative_path: None,
+        license: asset.license.clone(),
+        attribution: asset.attribution.clone(),
+        originator: asset.originator.clone(),
+        source_url: asset.source_url.clone(),
+    };
+    let encode_job = ExportJobRecord {
+        id: job.id.clone(),
+        asset_id: job.asset_id.clone(),
+        output_folder: job.output_folder.clone(),
+        export_scope: "full".to_string(),
+        region_start_seconds: None,
+        region_end_seconds: None,
+        loop_crossfade_seconds: None,
+        loop_crossfade_slope: None,
+        region_fade_gap_seconds: None,
+        region_fade_in_seconds: None,
+        region_fade_in_slope: None,
+        region_fade_out_seconds: None,
+        region_fade_out_slope: None,
+        format: job.format.clone(),
+        format_settings_json: job.format_settings_json.clone(),
+        processing_json: job.processing_json.clone(),
+        preserve_folder_structure: false,
+        include_attribution_sidecar: false,
+        overwrite_mode: "replace".to_string(),
+    };
+    let ffmpeg = resolve_ffmpeg(resource_dir)?;
+    let args = build_ffmpeg_args(
+        &ffmpeg,
+        &encode_job,
+        &intermediate_asset,
+        &noop_gain_processing_chain(),
+        settings,
+        output_path,
+    )?;
+    let output = run_ffmpeg_with_deadline(&ffmpeg, args, token, deadline)?;
+    let _ = fs::remove_file(&intermediate_path);
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "FFmpeg region export failed with status {}: {}",
+            output.status,
+            stderr.trim()
+        ));
+    }
+    Ok(())
+}
+
+fn noop_gain_processing_chain() -> GainProcessingChain {
+    GainProcessingChain {
+        version: 1,
+        gain: GainStage {
+            enabled: true,
+            gain_db: 0.0,
+            min_db: -24.0,
+            max_db: 36.0,
+        },
+        chain_order: vec!["gain".to_string()],
+    }
 }
 
 fn render_native_wav_export(
@@ -1670,17 +1784,15 @@ fn build_ffmpeg_args(
         args.push(output_path.to_string_lossy().to_string());
         return Ok(args);
     }
-    if job.export_scope == "region" {
+    let region_timing = if job.export_scope == "region" {
         let start = job.region_start_seconds.unwrap_or(0.0);
         let end = job
             .region_end_seconds
             .ok_or_else(|| "region export requires end seconds".to_string())?;
-        let duration = end - start;
-        args.push("-ss".to_string());
-        args.push(format_optional_seconds(job.region_start_seconds));
-        args.push("-t".to_string());
-        args.push(format!("{duration:.6}"));
-    }
+        Some((start, end, end - start))
+    } else {
+        None
+    };
     let mut audio_filters = Vec::new();
     let (fade_in, fade_out) = normalized_region_fade_seconds(job);
     if fade_in > 0.0 {
@@ -1702,8 +1814,19 @@ fn build_ffmpeg_args(
         audio_filters.push(format!("volume={:.2}dB", chain.gain.gain_db));
     }
     if !audio_filters.is_empty() {
+        if let Some((start, end, _duration)) = region_timing {
+            audio_filters.insert(
+                0,
+                format!("atrim=start={start:.6}:end={end:.6},asetpts=PTS-STARTPTS"),
+            );
+        }
         args.push("-af".to_string());
         args.push(audio_filters.join(","));
+    } else if let Some((start, _end, duration)) = region_timing {
+        args.push("-ss".to_string());
+        args.push(format!("{start:.3}"));
+        args.push("-t".to_string());
+        args.push(format!("{duration:.6}"));
     }
     args.extend(codec_args(&job.format, settings));
     args.push(output_path.to_string_lossy().to_string());
@@ -3049,9 +3172,10 @@ mod tests {
         assert!(args
             .windows(2)
             .any(|pair| pair[0] == "-c:a" && pair[1] == "libvorbis"));
-        assert!(args
-            .windows(2)
-            .any(|pair| pair[0] == "-af" && pair[1] == "volume=3.00dB"));
+        assert!(args.windows(2).any(|pair| pair[0] == "-af"
+            && pair[1].contains("atrim=start=0.250000:end=0.750000")
+            && pair[1].contains("asetpts=PTS-STARTPTS")
+            && pair[1].contains("volume=3.00dB")));
         let _ = fs::remove_file(source_path);
     }
 
@@ -3625,6 +3749,127 @@ mod tests {
         );
         let _ = fs::remove_file(prepared.path);
         let _ = fs::remove_file(plain.path);
+    }
+
+    #[test]
+    fn region_drag_renders_non_wav_formats_with_audio_payload() {
+        let connection = test_connection();
+        let fixture_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("test-fixtures")
+            .join("audio")
+            .join("short-tone.wav");
+        connection
+            .execute(
+                "UPDATE assets SET path_or_url = ?1, name = 'short-tone.wav', format = 'wav'
+                 WHERE id = 'asset_test'",
+                params![fixture_path.to_string_lossy()],
+            )
+            .expect("point asset at fixture");
+        let temp_root =
+            std::env::temp_dir().join(format!("sonilabs_non_wav_drag_{}", std::process::id()));
+
+        for (format, settings_json) in [
+            ("mp3", r#"{"mp3BitrateKbps":192,"mp3Mode":"cbr"}"#),
+            ("ogg", r#"{"oggQuality":5}"#),
+            ("flac", r#"{"flacCompressionLevel":5}"#),
+            ("m4a", r#"{"aacBitrateKbps":192}"#),
+        ] {
+            let prepared = prepare_region_drag_file(
+                &connection,
+                &temp_root,
+                None,
+                TempRegionExportInput {
+                    asset_id: "asset_test".to_string(),
+                    display_name: Some(format!("region_payload.{format}")),
+                    format: format.to_string(),
+                    region_start_seconds: 0.05,
+                    region_end_seconds: 0.25,
+                    loop_crossfade_seconds: None,
+                    loop_crossfade_slope: None,
+                    region_fade_gap_seconds: Some(0.005),
+                    region_fade_in_seconds: Some(0.08),
+                    region_fade_in_slope: Some(1.0),
+                    region_fade_out_seconds: Some(0.08),
+                    region_fade_out_slope: Some(1.0),
+                    format_settings_json: settings_json.to_string(),
+                    processing_json: test_processing_json(0.0),
+                    processing_hash: "processing:none".to_string(),
+                },
+            )
+            .unwrap_or_else(|error| panic!("{format} drag render failed: {error}"));
+            let metadata = fs::metadata(&prepared.path).expect("read rendered metadata");
+            assert!(
+                metadata.len() > 64,
+                "{format} rendered empty file at {}",
+                prepared.path
+            );
+            let decoded_path = temp_root.join(format!("decoded_{format}.wav"));
+            let ffmpeg = resolve_ffmpeg(None).expect("resolve ffmpeg");
+            let decoded = run_ffmpeg_with_deadline(
+                &ffmpeg,
+                vec![
+                    "-hide_banner".to_string(),
+                    "-loglevel".to_string(),
+                    "error".to_string(),
+                    "-y".to_string(),
+                    "-i".to_string(),
+                    prepared.path.clone(),
+                    "-f".to_string(),
+                    "wav".to_string(),
+                    decoded_path.to_string_lossy().to_string(),
+                ],
+                &CancellationToken::default(),
+                &JobDeadline::new(Duration::from_secs(5)),
+            )
+            .unwrap_or_else(|error| panic!("{format} decode failed: {error}"));
+            assert!(
+                decoded.status.success(),
+                "{format} decode failed: {}",
+                String::from_utf8_lossy(&decoded.stderr)
+            );
+            let decoded_bytes = fs::read(&decoded_path).expect("read decoded wav");
+            let decoded_wav = parse_wav_info(&decoded_bytes).expect("parse decoded wav");
+            let frame_count = decoded_wav.data_size / usize::from(decoded_wav.block_align);
+            let rms_window = |start: usize, len: usize| -> f64 {
+                let end = (start + len).min(frame_count);
+                let mut sum = 0.0_f64;
+                let mut count = 0.0_f64;
+                for frame in start..end {
+                    let sample = read_wav_sample(&decoded_bytes, &decoded_wav, frame, 0)
+                        .expect("sample") as f64;
+                    sum += sample * sample;
+                    count += 1.0;
+                }
+                (sum / count.max(1.0)).sqrt()
+            };
+            let mut sum = 0.0_f64;
+            let mut count = 0.0_f64;
+            for frame in 0..frame_count {
+                let sample =
+                    read_wav_sample(&decoded_bytes, &decoded_wav, frame, 0).expect("sample") as f64;
+                sum += sample * sample;
+                count += 1.0;
+            }
+            assert!(
+                (sum / count.max(1.0)).sqrt() > 0.001,
+                "{format} decoded drag render was silent"
+            );
+            let window = 1024.min(frame_count / 4).max(1);
+            let middle = rms_window(frame_count / 2, window).max(0.000_001);
+            assert!(
+                rms_window(0, window) < middle * 0.75,
+                "{format} fade-in was not applied"
+            );
+            assert!(
+                rms_window(frame_count.saturating_sub(window), window) < middle * 0.75,
+                "{format} fade-out was not applied"
+            );
+            let _ = fs::remove_file(prepared.path);
+            let _ = fs::remove_file(decoded_path);
+        }
+
+        let _ = fs::remove_dir_all(temp_root);
     }
 
     #[test]

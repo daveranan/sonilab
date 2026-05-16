@@ -1597,7 +1597,9 @@ export function BottomDockPlaceholder({
             );
             return;
           }
-          const nativeDrag = await startPreparedFilesDrag([prepared.path]);
+          const nativeDrag = await startPreparedFilesDrag([prepared.path], {
+            preferNative: !canNativeCut,
+          });
           if (!nativeDrag.ok) {
             if (nativeDrag.effect === "none") {
               await deletePreparedDragFiles([prepared.path]);
@@ -1722,6 +1724,7 @@ export function BottomDockPlaceholder({
           }
           const nativeDrag = await startPreparedFilesDrag(
             prepared.map((file) => file.path),
+            { preferNative: !canPassthroughOriginal },
           );
           if (!nativeDrag.ok || nativeDrag.effect !== "copy") {
             setDragFailurePath(prepared[0]?.path ?? null);

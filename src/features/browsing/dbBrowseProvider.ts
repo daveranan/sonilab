@@ -27,7 +27,13 @@ type DatabaseBrowseRow =
       child_count?: number | null;
       sourceId?: string;
       source_id?: string;
+      sourceName?: string;
+      source_name?: string;
+      sourceRootUri?: string;
+      source_root_uri?: string;
       path: string;
+      fullPath?: string;
+      full_path?: string;
       status: string;
     }
   | {
@@ -54,7 +60,17 @@ type DatabaseBrowseRow =
       headroom_db?: number | null;
       sourceName?: string;
       source_name?: string;
+      sourceId?: string;
+      source_id?: string;
+      sourceRootUri?: string;
+      source_root_uri?: string;
       provider?: string | null;
+      folderId?: string | null;
+      folder_id?: string | null;
+      folderPath?: string | null;
+      folder_path?: string | null;
+      fullPath?: string;
+      full_path?: string;
       relativePath?: string;
       relative_path?: string;
       license?: string | null;
@@ -240,12 +256,18 @@ function databaseRowToBrowseRow(row: DatabaseBrowseRow): BrowseRow {
       name: row.name,
       childCount: row.childCount ?? row.child_count ?? null,
       sourceId: row.sourceId ?? row.source_id ?? "",
+      sourceName: row.sourceName ?? row.source_name ?? undefined,
+      sourceRootUri: row.sourceRootUri ?? row.source_root_uri ?? undefined,
       path: row.path,
+      fullPath: row.fullPath ?? row.full_path ?? undefined,
       status: folderStatus(row.status),
     };
   }
 
   const sourceName = row.sourceName ?? row.source_name ?? "Indexed source";
+  const sourceId = row.sourceId ?? row.source_id ?? "";
+  const sourceRootUri = row.sourceRootUri ?? row.source_root_uri ?? "";
+  const folderPath = row.folderPath ?? row.folder_path ?? null;
   const relativePath = row.relativePath ?? row.relative_path ?? row.name;
   return {
     kind: "asset",
@@ -263,7 +285,12 @@ function databaseRowToBrowseRow(row: DatabaseBrowseRow): BrowseRow {
     clipping: row.clipping ?? null,
     headroomDb: row.headroomDb ?? row.headroom_db ?? null,
     sourceName,
+    sourceId,
+    sourceRootUri,
     provider: row.provider ?? null,
+    folderId: row.folderId ?? row.folder_id ?? null,
+    folderPath,
+    fullPath: row.fullPath ?? row.full_path ?? relativePath,
     relativePath,
     license: row.license ?? null,
     metadataFile: row.metadataFile ?? row.metadata_file ?? null,

@@ -948,7 +948,9 @@ impl DataRepository {
             .map_err(|error| error.to_string())?;
 
         document.tags = self.asset_tags(&document.asset_id)?;
-        document.tags.extend(self.asset_user_tags(&document.asset_id)?);
+        document
+            .tags
+            .extend(self.asset_user_tags(&document.asset_id)?);
         document.tags.sort();
         document.tags.dedup();
         document.collection_names = self.collection_names_for_asset(&document.asset_id)?;

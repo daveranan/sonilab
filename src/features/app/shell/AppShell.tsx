@@ -387,6 +387,12 @@ function pathBaseName(path: string | undefined): string | null {
   return parts.length > 0 ? parts[parts.length - 1] : null;
 }
 
+function parentPath(path: string): string {
+  const normalized = path.replace(/\//g, "\\");
+  const index = normalized.lastIndexOf("\\");
+  return index > 0 ? normalized.slice(0, index) : path;
+}
+
 function sameBreadcrumbPart(left: string | null | undefined, right: string): boolean {
   return (left ?? "").trim().toLowerCase() === right.trim().toLowerCase();
 }
@@ -878,6 +884,7 @@ const initialTabs: AppViewTab[] = [
   },
 ];
 const shellSessionStorageKey = "sonilabs.appShellSession.v2";
+const enabledLocalSourcesStorageKey = "sonilabs.enabledLocalSources.v1";
 const defaultLibraryExpandedIds = [
   "libraries-local",
   "local-main",
@@ -924,6 +931,39 @@ function restoredStringArray(value: unknown, fallback: string[]): string[] {
   return Array.isArray(value)
     ? value.filter((item): item is string => typeof item === "string")
     : fallback;
+}
+
+function readEnabledLocalSourceIds(): string[] | null {
+  try {
+    const raw = window.localStorage.getItem(enabledLocalSourcesStorageKey);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed)
+      ? parsed.filter((item): item is string => typeof item === "string")
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function applyEnabledLocalSources(
+  scope: SourceScope,
+  enabledSourceIds: string[] | null,
+): SourceScope {
+  if (enabledSourceIds === null) return scope;
+  if (scope.kind === "local" || scope.kind === "all") {
+    return { kind: "sources", sourceIds: enabledSourceIds };
+  }
+  if (scope.kind === "source") {
+    return enabledSourceIds.includes(scope.sourceId) ? scope : { kind: "sources", sourceIds: [] };
+  }
+  if (scope.kind === "sources") {
+    return {
+      kind: "sources",
+      sourceIds: scope.sourceIds.filter((sourceId) => enabledSourceIds.includes(sourceId)),
+    };
+  }
+  return scope;
 }
 
 export function AppShell() {
@@ -977,6 +1017,9 @@ function AppShellContent() {
   const [previewedRowIds, setPreviewedRowIds] = useState(() => new Set<string>());
   const [previewedActivity, setPreviewedActivity] = useState<ActivityRow[]>([]);
   const [libraryNodes, setLibraryNodes] = useState(libraries);
+  const [enabledLocalSourceIds, setEnabledLocalSourceIds] = useState<string[] | null>(
+    readEnabledLocalSourceIds,
+  );
   const [sourceDropStatus, setSourceDropStatus] = useState<string | null>(null);
   const [dropOverlayVisible, setDropOverlayVisible] = useState(false);
   const [pendingImportPaths, setPendingImportPaths] = useState<string[] | null>(null);
@@ -1008,6 +1051,22 @@ function AppShellContent() {
         .flatMap((node) => node.children ?? [])
         .filter((node) => node.kind === "source"),
     [libraryNodes],
+  );
+  const localSourceIds = useMemo(
+    () => localSourceNodes.map((source) => source.sourceId ?? source.id),
+    [localSourceNodes],
+  );
+  const effectiveEnabledLocalSourceIds = useMemo(
+    () => enabledLocalSourceIds ?? localSourceIds,
+    [enabledLocalSourceIds, localSourceIds],
+  );
+  const filteredSourceScope = useMemo(
+    () =>
+      applyEnabledLocalSources(
+        activeTab?.sourceScope ?? { kind: "all" },
+        enabledLocalSourceIds === null ? null : effectiveEnabledLocalSourceIds,
+      ),
+    [activeTab?.sourceScope, effectiveEnabledLocalSourceIds, enabledLocalSourceIds],
   );
   const localSourcesForSettings = useMemo(
     () =>
@@ -1059,6 +1118,26 @@ function AppShellContent() {
   }, [refreshActivity, refreshCollections, refreshLibraries]);
 
   useEffect(() => {
+    if (enabledLocalSourceIds === null) {
+      window.localStorage.removeItem(enabledLocalSourcesStorageKey);
+      return;
+    }
+    window.localStorage.setItem(
+      enabledLocalSourcesStorageKey,
+      JSON.stringify(enabledLocalSourceIds),
+    );
+  }, [enabledLocalSourceIds]);
+
+  useEffect(() => {
+    if (enabledLocalSourceIds === null) return;
+    setEnabledLocalSourceIds((current) => {
+      if (current === null) return current;
+      const pruned = current.filter((sourceId) => localSourceIds.includes(sourceId));
+      return pruned.length === current.length ? current : pruned;
+    });
+  }, [enabledLocalSourceIds, localSourceIds]);
+
+  useEffect(() => {
     let cancelled = false;
     const handle = window.setTimeout(() => {
       void checkForAppUpdate()
@@ -1087,7 +1166,7 @@ function AppShellContent() {
   const parsed = useMemo(() => {
     const next = parseSearchGrammar(
       searchText,
-      activeTab?.sourceScope ?? { kind: "all" },
+      filteredSourceScope,
     );
     return {
       ...next,
@@ -1097,7 +1176,7 @@ function AppShellContent() {
         includeUnavailable: activeIncludeUnavailable || next.query.includeUnavailable,
       },
     };
-  }, [activeIncludeUnavailable, activeSort, activeTab?.sourceScope, searchText]);
+  }, [activeIncludeUnavailable, activeSort, filteredSourceScope, searchText]);
   const { dispatch, activeRowId, selectedRowIds } = useBrowseSelectionStore();
   const { response, loading, executeNow, removeRowsById } = useDebouncedBrowse({
     provider,
@@ -1767,10 +1846,27 @@ function AppShellContent() {
     [handleOpenLibraryNode],
   );
 
+  const handleLocalSourceEnabledChange = useCallback(
+    (sourceId: string, checked: boolean) => {
+      setEnabledLocalSourceIds((current) => {
+        const next = new Set(current ?? localSourceIds);
+        if (checked) next.add(sourceId);
+        else next.delete(sourceId);
+        return [...next].filter((id) => localSourceIds.includes(id));
+      });
+    },
+    [localSourceIds],
+  );
+
+  const clearLocalSourceFilter = useCallback(() => {
+    setEnabledLocalSourceIds(null);
+  }, []);
+
   const handleCheckOnlyLibraryNode = useCallback(
     (node: LibraryNode) => {
       const sourceId = node.sourceId ?? (node.kind === "source" ? node.id : undefined);
       if (!sourceId) return;
+      setEnabledLocalSourceIds([sourceId]);
       updateActiveTab({ sourceScope: { kind: "source", sourceId } });
       handleOpenLibraryNode(node);
     },
@@ -1956,6 +2052,39 @@ function AppShellContent() {
       });
     },
     [activeIncludeUnavailable, libraryNodes, replaceActiveTab],
+  );
+
+  const handleGoToRowFolder = useCallback(
+    (row: BrowseRow) => {
+      if (row.kind === "folder") {
+        handleOpenFolderRow(row);
+        return;
+      }
+      if (row.folderId && row.folderPath) {
+        const sourceId = row.sourceId;
+        if (!sourceId) return;
+        handleOpenFolderRow({
+          kind: "folder",
+          id: row.folderId,
+          name: pathBaseName(row.folderPath) ?? row.sourceName,
+          childCount: null,
+          sourceId,
+          sourceName: row.sourceName,
+          sourceRootUri: row.sourceRootUri,
+          path: row.folderPath,
+          fullPath: row.fullPath ? parentPath(row.fullPath) : row.folderPath,
+          status: "indexed",
+        });
+        return;
+      }
+      if (!row.sourceId) return;
+      const sourceNode = findLibraryNode(
+        libraryNodes,
+        (node) => node.kind === "source" && (node.sourceId ?? node.id) === row.sourceId,
+      );
+      if (sourceNode) handleOpenLibraryNode(sourceNode);
+    },
+    [handleOpenFolderRow, handleOpenLibraryNode, libraryNodes],
   );
 
   const handleBreadcrumbNavigate = useCallback(
@@ -2760,6 +2889,7 @@ function AppShellContent() {
         activity={activity}
         collectionExpandedIds={collectionExpandedIds}
         collections={collections}
+        enabledLocalSourceIds={effectiveEnabledLocalSourceIds}
         libraryExpandedIds={libraryExpandedIds}
         libraries={libraryNodes}
         onCollectionExpandedIdsChange={setCollectionExpandedIds}
@@ -2792,6 +2922,7 @@ function AppShellContent() {
         onReindexLibraryNode={handleReindexLibraryNode}
         onRetryFailedLibraryNode={handleRetryFailedLibraryNode}
         onResize={setSidebarWidth}
+        onSourceEnabledChange={handleLocalSourceEnabledChange}
         onClearActivity={handleClearActivity}
         onClearPreviewed={handleClearPreviewedActivity}
         onRemoveActivity={handleRemoveActivity}
@@ -2870,6 +3001,21 @@ function AppShellContent() {
             Indexing: {indexingStatus}
           </div>
         ) : null}
+        {enabledLocalSourceIds !== null ? (
+          <div className="flex h-7 items-center justify-between border-b border-border bg-panel px-3 text-[11px] text-muted-foreground">
+            <span>
+              Library filter: {effectiveEnabledLocalSourceIds.length}/
+              {localSourceIds.length} enabled
+            </span>
+            <button
+              className="text-foreground hover:underline"
+              onClick={clearLocalSourceFilter}
+              type="button"
+            >
+              All libraries
+            </button>
+          </div>
+        ) : null}
         <BrowseTable
           density={browseDensity}
           loading={browseLoading}
@@ -2877,6 +3023,7 @@ function AppShellContent() {
           onAddToCollection={handleOpenCollectionPickerForRow}
           onAssetFileDragRequest={handleAssetFileDragRequest}
           onDeleteRow={handleDeleteBrowseRow}
+          onGoToFolder={handleGoToRowFolder}
           onInternalDragStart={handleInternalRowDragStart}
           onOpenInExplorer={handleOpenRowInExplorer}
           onOpenFolder={handleOpenFolderRow}
