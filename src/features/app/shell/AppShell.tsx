@@ -1056,17 +1056,24 @@ function AppShellContent() {
     () => localSourceNodes.map((source) => source.sourceId ?? source.id),
     [localSourceNodes],
   );
-  const effectiveEnabledLocalSourceIds = useMemo(
-    () => enabledLocalSourceIds ?? localSourceIds,
+  const prunedEnabledLocalSourceIds = useMemo(
+    () =>
+      enabledLocalSourceIds === null
+        ? null
+        : enabledLocalSourceIds.filter((sourceId) => localSourceIds.includes(sourceId)),
     [enabledLocalSourceIds, localSourceIds],
+  );
+  const effectiveEnabledLocalSourceIds = useMemo(
+    () => prunedEnabledLocalSourceIds ?? localSourceIds,
+    [prunedEnabledLocalSourceIds, localSourceIds],
   );
   const filteredSourceScope = useMemo(
     () =>
       applyEnabledLocalSources(
         activeTab?.sourceScope ?? { kind: "all" },
-        enabledLocalSourceIds === null ? null : effectiveEnabledLocalSourceIds,
+        prunedEnabledLocalSourceIds,
       ),
-    [activeTab?.sourceScope, effectiveEnabledLocalSourceIds, enabledLocalSourceIds],
+    [activeTab?.sourceScope, prunedEnabledLocalSourceIds],
   );
   const localSourcesForSettings = useMemo(
     () =>
@@ -1118,24 +1125,15 @@ function AppShellContent() {
   }, [refreshActivity, refreshCollections, refreshLibraries]);
 
   useEffect(() => {
-    if (enabledLocalSourceIds === null) {
+    if (prunedEnabledLocalSourceIds === null) {
       window.localStorage.removeItem(enabledLocalSourcesStorageKey);
       return;
     }
     window.localStorage.setItem(
       enabledLocalSourcesStorageKey,
-      JSON.stringify(enabledLocalSourceIds),
+      JSON.stringify(prunedEnabledLocalSourceIds),
     );
-  }, [enabledLocalSourceIds]);
-
-  useEffect(() => {
-    if (enabledLocalSourceIds === null) return;
-    setEnabledLocalSourceIds((current) => {
-      if (current === null) return current;
-      const pruned = current.filter((sourceId) => localSourceIds.includes(sourceId));
-      return pruned.length === current.length ? current : pruned;
-    });
-  }, [enabledLocalSourceIds, localSourceIds]);
+  }, [prunedEnabledLocalSourceIds]);
 
   useEffect(() => {
     let cancelled = false;
