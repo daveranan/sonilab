@@ -617,6 +617,33 @@ function findLibraryNode(
   return null;
 }
 
+function activeLibraryNodeIdForTab(
+  nodes: LibraryNode[],
+  tab: AppViewTab | undefined,
+): string | null {
+  if (!tab) return null;
+  if (tab.id.startsWith("library-")) {
+    const nodeId = tab.id.slice("library-".length);
+    return findLibraryNode(nodes, (node) => node.id === nodeId)?.id ?? null;
+  }
+  if (tab.kind !== "folder") return null;
+  if (tab.folderId) {
+    return (
+      findLibraryNode(
+        nodes,
+        (node) => node.kind === "folder" && node.folderId === tab.folderId,
+      )?.id ?? null
+    );
+  }
+  if (!tab.sourceId) return null;
+  return (
+    findLibraryNode(
+      nodes,
+      (node) => node.kind === "source" && (node.sourceId ?? node.id) === tab.sourceId,
+    )?.id ?? null
+  );
+}
+
 function quoteSearchFilterValue(value: string): string {
   if (/^[a-z0-9_-]+$/i.test(value)) return value;
   return `"${value.replace(/"/g, "")}"`;
@@ -1087,6 +1114,14 @@ function AppShellContent() {
   );
   const showLocalOnboarding =
     !onboardingDismissed && localSourceNodes.length === 0 && !settingsOpen;
+  const activeLibraryNodeId = useMemo(
+    () => activeLibraryNodeIdForTab(libraryNodes, activeTab),
+    [activeTab, libraryNodes],
+  );
+  const activeCollectionNodeId =
+    activeTab?.kind === "collection" || activeTab?.kind === "export"
+      ? (activeTab.collectionId ?? null)
+      : null;
 
   const refreshLibraries = useCallback(() => {
     void loadLibraryTree()
@@ -2885,6 +2920,8 @@ function AppShellContent() {
     >
       <LeftSidebar
         activity={activity}
+        activeCollectionNodeId={activeCollectionNodeId}
+        activeLibraryNodeId={activeLibraryNodeId}
         collectionExpandedIds={collectionExpandedIds}
         collections={collections}
         enabledLocalSourceIds={effectiveEnabledLocalSourceIds}

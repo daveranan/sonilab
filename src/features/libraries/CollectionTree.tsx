@@ -8,6 +8,7 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
+import { cn } from "@/lib/utils";
 
 import type { CollectionNode } from "./libraryTypes";
 import { toggleExpandedNodeIds } from "./treeExpansion";
@@ -42,6 +43,7 @@ function CollectionTreeNode({
   editingId,
   startRenaming,
   finishRenaming,
+  activeNodeId,
 }: {
   node: CollectionNode;
   depth: number;
@@ -56,9 +58,11 @@ function CollectionTreeNode({
   editingId: string | null;
   startRenaming: (node: CollectionNode) => void;
   finishRenaming: () => void;
+  activeNodeId?: string | null;
 }) {
   const hasChildren = Boolean(node.children?.length);
   const isExpanded = expanded.has(node.id);
+  const isActive = activeNodeId === node.id;
   const canDelete = !node.system;
   const isEditing = editingId === node.id;
   const inputRef = useRef<HTMLInputElement>(null);
@@ -84,8 +88,21 @@ function CollectionTreeNode({
       <ContextMenu>
         <ContextMenuTrigger asChild>
           <div
-            className="flex h-7 w-full items-center gap-1.5 truncate rounded-sm px-2 text-left text-[13px] text-muted-foreground hover:bg-muted hover:text-foreground"
+            aria-selected={isActive}
+            className={cn(
+              "flex h-8 w-full cursor-default items-center gap-1.5 truncate rounded-sm px-2 text-left text-[13px] text-muted-foreground outline-none hover:bg-muted hover:text-foreground focus-visible:bg-muted focus-visible:text-foreground",
+              isActive &&
+                "bg-zinc-200 text-zinc-950 hover:bg-zinc-200 [&_*]:text-zinc-950",
+            )}
             data-collection-id={node.id}
+            onClick={() => {
+              if (!isEditing) onOpenCollection?.(node);
+            }}
+            onKeyDown={(event) => {
+              if (isEditing || (event.key !== "Enter" && event.key !== " ")) return;
+              event.preventDefault();
+              onOpenCollection?.(node);
+            }}
             onDragOver={(event) => {
               if (
                 event.dataTransfer.types.includes("application/x-sonilabs-assets") ||
@@ -123,6 +140,8 @@ function CollectionTreeNode({
               }
             }}
             style={{ paddingLeft: `${8 + depth * 14}px` }}
+            role="treeitem"
+            tabIndex={0}
             title={node.label}
           >
             {hasChildren ? (
@@ -130,8 +149,11 @@ function CollectionTreeNode({
                 aria-label={
                   isExpanded ? `Collapse ${node.label}` : `Expand ${node.label}`
                 }
-                className="-mx-1 flex h-7 w-6 shrink-0 items-center justify-center"
-                onClick={(event) => toggle(node, event.altKey)}
+                className="-mx-1 flex h-8 w-7 shrink-0 items-center justify-center"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  toggle(node, event.altKey);
+                }}
                 type="button"
               >
                 {isExpanded ? (
@@ -163,13 +185,7 @@ function CollectionTreeNode({
                 ref={inputRef}
               />
             ) : (
-              <button
-                className="min-w-0 flex-1 truncate text-left"
-                onClick={() => onOpenCollection?.(node)}
-                type="button"
-              >
-                {node.label}
-              </button>
+              <span className="min-w-0 flex-1 truncate text-left">{node.label}</span>
             )}
           </div>
         </ContextMenuTrigger>
@@ -200,6 +216,7 @@ function CollectionTreeNode({
               expanded={expanded}
               key={child.id}
               node={child}
+              activeNodeId={activeNodeId}
               onCreateChildCollection={onCreateChildCollection}
               onDeleteCollection={onDeleteCollection}
               onDropAssets={onDropAssets}
@@ -218,6 +235,7 @@ function CollectionTreeNode({
 }
 
 export function CollectionTree({
+  activeNodeId,
   expandedIds,
   nodes,
   onExpandedIdsChange,
@@ -241,6 +259,7 @@ export function CollectionTree({
   onDropFolderRef?: (node: CollectionNode, folderId: string) => void;
   renamingCollectionId?: string | null;
   onFinishRenamingCollection?: () => void;
+  activeNodeId?: string | null;
 }) {
   const [internalExpanded, setInternalExpanded] = useState(() => new Set(["project"]));
   const expanded = new Set(expandedIds ?? [...internalExpanded]);
@@ -263,11 +282,12 @@ export function CollectionTree({
   }
 
   return (
-    <div>
+    <div role="tree">
       {nodes.map((node) => (
         <CollectionTreeNode
           depth={0}
           expanded={visibleExpanded}
+          activeNodeId={activeNodeId}
           key={node.id}
           node={node}
           onCreateChildCollection={onCreateChildCollection}
@@ -280,9 +300,7 @@ export function CollectionTree({
           finishRenaming={finishRenaming}
           startRenaming={(node) => setManualEditingId(node.id)}
           toggle={(node, recursive) =>
-            setExpandedIds(
-              new Set(toggleExpandedNodeIds(expanded, node, recursive)),
-            )
+            setExpandedIds(new Set(toggleExpandedNodeIds(expanded, node, recursive)))
           }
         />
       ))}

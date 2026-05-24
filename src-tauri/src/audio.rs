@@ -176,6 +176,7 @@ const SPARSE_WAVEFORM_FILE_BYTES: u64 = 8 * 1024 * 1024;
 const SPARSE_WINDOWS_PER_PEAK: usize = 4;
 const SPARSE_FRAMES_PER_WINDOW: usize = 512;
 const BINARY_WAVEFORM_MAGIC: &[u8; 8] = b"SLWAVE1\0";
+const WAVEFORM_CACHE_VERSION: i64 = 2;
 const WAVEFORM_DEADLINE_SECONDS: u64 = 20 * 60;
 
 struct AudioJobRegistration<'a> {
@@ -1034,29 +1035,7 @@ fn generate_sidecar_waveform_peaks(
     deadline: &JobDeadline,
 ) -> Result<WaveformPeakData, String> {
     let input_format = waveform_input_format(asset, source_path);
-    let prefer_ffmpeg =
-        cfg!(target_os = "macos") || audiowaveform_input_format(input_format.as_deref()).is_none();
     let mut errors = Vec::new();
-
-    if !prefer_ffmpeg {
-        match generate_audiowaveform_peaks(
-            connection,
-            cache_root,
-            resource_dir,
-            asset,
-            source_path,
-            input_format.as_deref(),
-            content_key,
-            channel_mode,
-            samples_per_peak,
-            token,
-            deadline,
-        ) {
-            Ok(peaks) => return Ok(peaks),
-            Err(error) if error.contains("cancelled") => return Err(error),
-            Err(error) => errors.push(error),
-        }
-    }
 
     match generate_ffmpeg_wav_peaks(
         connection,
@@ -1075,24 +1054,22 @@ fn generate_sidecar_waveform_peaks(
         Err(error) => errors.push(error),
     }
 
-    if prefer_ffmpeg {
-        match generate_audiowaveform_peaks(
-            connection,
-            cache_root,
-            resource_dir,
-            asset,
-            source_path,
-            input_format.as_deref(),
-            content_key,
-            channel_mode,
-            samples_per_peak,
-            token,
-            deadline,
-        ) {
-            Ok(peaks) => return Ok(peaks),
-            Err(error) if error.contains("cancelled") => return Err(error),
-            Err(error) => errors.push(error),
-        }
+    match generate_audiowaveform_peaks(
+        connection,
+        cache_root,
+        resource_dir,
+        asset,
+        source_path,
+        input_format.as_deref(),
+        content_key,
+        channel_mode,
+        samples_per_peak,
+        token,
+        deadline,
+    ) {
+        Ok(peaks) => return Ok(peaks),
+        Err(error) if error.contains("cancelled") => return Err(error),
+        Err(error) => errors.push(error),
     }
 
     Err(format!(
@@ -1796,7 +1773,7 @@ fn generate_wav_peaks(
     Ok(WaveformPeakData {
         asset_id: asset_id.to_string(),
         content_key: content_key.to_string(),
-        peak_version: 1,
+        peak_version: WAVEFORM_CACHE_VERSION,
         channel_mode: channel_mode.to_string(),
         samples_per_peak,
         duration_seconds: frame_count as f64 / wav.sample_rate as f64,
@@ -1911,7 +1888,7 @@ fn generate_wav_peaks_sparse(
     Ok(WaveformPeakData {
         asset_id: asset_id.to_string(),
         content_key: content_key.to_string(),
-        peak_version: 1,
+        peak_version: WAVEFORM_CACHE_VERSION,
         channel_mode: channel_mode.to_string(),
         samples_per_peak: samples_per_peak as i64,
         duration_seconds: frame_count as f64 / wav.sample_rate as f64,
@@ -2154,7 +2131,7 @@ fn slice_array<const N: usize>(bytes: &[u8], offset: usize) -> Result<[u8; N], S
 }
 
 fn waveform_cache_key(content_key: &str, channel_mode: &str, samples_per_peak: i64) -> String {
-    format!("waveform:{content_key}:v1:{channel_mode}:{samples_per_peak}")
+    format!("waveform:{content_key}:v{WAVEFORM_CACHE_VERSION}:{channel_mode}:{samples_per_peak}")
 }
 
 fn processing_hash_for_gain(gain_db: f64) -> String {

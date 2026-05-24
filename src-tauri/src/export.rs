@@ -2,7 +2,10 @@ use std::fs;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::Mutex;
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Mutex,
+};
 use std::thread::sleep;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -16,6 +19,8 @@ use crate::reliability::{BoundedJobGate, CancellationRegistry, CancellationToken
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+static EXPORT_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 pub struct ExportRuntime {
     lock: Mutex<()>,
@@ -733,14 +738,13 @@ pub fn prepare_asset_drag_file(
         });
     }
 
-    let export_dir = temp_root.join("sonilabs-export-drag");
+    let export_dir = temp_root
+        .join("sonilabs-export-drag")
+        .join(make_id("render"));
     fs::create_dir_all(&export_dir).map_err(|error| error.to_string())?;
     let extension = output_extension(&input.format);
     let file_name = format!("{}.{}", sanitize_file_stem(file_display_name), extension);
     let output_path = export_dir.join(&file_name);
-    if output_path.is_file() {
-        fs::remove_file(&output_path).map_err(|error| error.to_string())?;
-    }
     let job = ExportJobRecord {
         id: make_id("drag_job"),
         asset_id: input.asset_id.clone(),
@@ -813,20 +817,25 @@ pub fn delete_prepared_drag_files(paths: Vec<String>) -> Result<usize, String> {
     let mut removed = 0_usize;
     for path in paths {
         let file_path = PathBuf::from(path);
-        let Some(parent) = file_path.parent() else {
-            continue;
-        };
-        let is_drag_temp = parent
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name == "sonilabs-export-drag");
-        if !is_drag_temp || !file_path.is_file() {
+        if !is_drag_temp_path(&file_path) || !file_path.is_file() {
             continue;
         }
         fs::remove_file(&file_path).map_err(|error| error.to_string())?;
+        if let Some(parent) = file_path.parent() {
+            let _ = fs::remove_dir(parent);
+        }
         removed += 1;
     }
     Ok(removed)
+}
+
+fn is_drag_temp_path(path: &Path) -> bool {
+    path.ancestors().skip(1).any(|ancestor| {
+        ancestor
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name == "sonilabs-export-drag")
+    })
 }
 
 fn validate_drag_export_input(input: &TempAssetDragExportInput) -> Result<(), String> {
@@ -932,7 +941,9 @@ fn prepare_mock_drag_file(
     input: TempAssetDragExportInput,
     gain_db: f64,
 ) -> Result<PreparedRegionDragFile, String> {
-    let export_dir = temp_root.join("sonilabs-export-drag");
+    let export_dir = temp_root
+        .join("sonilabs-export-drag")
+        .join(make_id("render"));
     fs::create_dir_all(&export_dir).map_err(|error| error.to_string())?;
     let file_stem = input
         .display_name
@@ -2890,7 +2901,8 @@ fn make_id(prefix: &str) -> String {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
         .unwrap_or_default();
-    format!("{prefix}_{nanos}")
+    let sequence = EXPORT_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("{prefix}_{nanos}_{sequence}")
 }
 
 #[cfg(test)]
@@ -3313,6 +3325,87 @@ mod tests {
                 .file_name()
                 .and_then(|name| name.to_str()),
             Some("short-tone.wav")
+        );
+        let _ = fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn rendered_drag_exports_use_unique_temp_paths() {
+        let connection = test_connection();
+        let temp_root =
+            std::env::temp_dir().join(format!("sonilabs_drag_unique_paths_{}", std::process::id()));
+        let fixture_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("test-fixtures")
+            .join("audio")
+            .join("short-tone.wav");
+        connection
+            .execute(
+                "UPDATE assets SET path_or_url = ?1, name = 'short-tone.wav', format = 'wav'
+                 WHERE id = 'asset_test'",
+                params![fixture_path.to_string_lossy()],
+            )
+            .expect("point asset at fixture");
+
+        let first = prepare_asset_drag_file(
+            &connection,
+            &temp_root,
+            None,
+            TempAssetDragExportInput {
+                asset_id: "asset_test".to_string(),
+                display_name: Some("short-tone.wav".to_string()),
+                format: "wav".to_string(),
+                export_scope: "full".to_string(),
+                region_start_seconds: None,
+                region_end_seconds: None,
+                loop_crossfade_seconds: None,
+                loop_crossfade_slope: None,
+                region_fade_gap_seconds: None,
+                region_fade_in_seconds: None,
+                region_fade_in_slope: None,
+                region_fade_out_seconds: None,
+                region_fade_out_slope: None,
+                format_settings_json: "{}".to_string(),
+                processing_json: test_processing_json(3.0),
+                processing_hash: "processing:gain:3.00".to_string(),
+            },
+        )
+        .expect("prepare first drag");
+        let second = prepare_asset_drag_file(
+            &connection,
+            &temp_root,
+            None,
+            TempAssetDragExportInput {
+                asset_id: "asset_test".to_string(),
+                display_name: Some("short-tone.wav".to_string()),
+                format: "wav".to_string(),
+                export_scope: "full".to_string(),
+                region_start_seconds: None,
+                region_end_seconds: None,
+                loop_crossfade_seconds: None,
+                loop_crossfade_slope: None,
+                region_fade_gap_seconds: None,
+                region_fade_in_seconds: None,
+                region_fade_in_slope: None,
+                region_fade_out_seconds: None,
+                region_fade_out_slope: None,
+                format_settings_json: "{}".to_string(),
+                processing_json: test_processing_json(3.0),
+                processing_hash: "processing:gain:3.00".to_string(),
+            },
+        )
+        .expect("prepare second drag");
+
+        assert_ne!(first.path, second.path);
+        assert_eq!(
+            Path::new(&first.path)
+                .file_name()
+                .and_then(|name| name.to_str()),
+            Some("short-tone.wav")
+        );
+        assert_eq!(
+            delete_prepared_drag_files(vec![first.path, second.path]).unwrap(),
+            2
         );
         let _ = fs::remove_dir_all(temp_root);
     }

@@ -34,6 +34,8 @@ export function LeftSidebar({
   libraries,
   collections,
   activity,
+  activeCollectionNodeId,
+  activeLibraryNodeId,
   enabledLocalSourceIds,
   collectionExpandedIds,
   libraryExpandedIds,
@@ -79,6 +81,8 @@ export function LeftSidebar({
   libraries: LibraryNode[];
   collections: CollectionNode[];
   activity: ActivityRow[];
+  activeCollectionNodeId?: string | null;
+  activeLibraryNodeId?: string | null;
   enabledLocalSourceIds?: string[];
   collectionExpandedIds?: string[];
   libraryExpandedIds?: string[];
@@ -169,6 +173,7 @@ export function LeftSidebar({
             </div>
           ) : null}
           <LibraryTree
+            activeNodeId={activeLibraryNodeId}
             expandedIds={libraryExpandedIds}
             nodes={libraries}
             checkedSourceIds={enabledLocalSourceIds}
@@ -206,6 +211,7 @@ export function LeftSidebar({
             title="Collections"
           />
           <CollectionTree
+            activeNodeId={activeCollectionNodeId}
             expandedIds={collectionExpandedIds}
             nodes={collections}
             onExpandedIdsChange={onCollectionExpandedIdsChange}

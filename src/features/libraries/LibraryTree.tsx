@@ -22,6 +22,7 @@ import { sourceStatusIcon, sourceStatusLabels } from "./sourceStatus";
 import { toggleExpandedNodeIds } from "./treeExpansion";
 
 type LibraryTreeProps = {
+  activeNodeId?: string | null;
   expandedIds?: string[];
   checkedSourceIds?: string[];
   nodes: LibraryNode[];
@@ -71,6 +72,7 @@ function TreeNode({
   onCopyPath,
   inheritedRootUri,
   checkedSourceIds,
+  activeNodeId,
 }: {
   node: LibraryNode;
   depth: number;
@@ -93,9 +95,11 @@ function TreeNode({
   onCopyPath?: (node: LibraryNode, path: string) => void;
   inheritedRootUri?: string;
   checkedSourceIds?: Set<string>;
+  activeNodeId?: string | null;
 }) {
   const hasChildren = Boolean(node.children?.length);
   const isExpanded = expanded.has(node.id);
+  const isActive = activeNodeId === node.id;
   const Icon =
     node.kind === "tagRoot" || node.kind === "tagCategory" || node.kind === "query"
       ? Tags
@@ -121,14 +125,34 @@ function TreeNode({
   const canOpenPath = Boolean(nodePath) || canOpenInExplorer;
   const sourceId = node.sourceId ?? (node.kind === "source" ? node.id : undefined);
   const showSourceCheckbox = node.kind === "source" && Boolean(sourceId);
+  const activateNode = (recursive: boolean) => {
+    if ((node.kind === "root" || node.kind === "tagRoot") && hasChildren) {
+      toggle(node, recursive);
+      return;
+    }
+    recursive && onCheckOnlyNode ? onCheckOnlyNode(node) : onOpenNode?.(node);
+  };
 
   return (
     <>
       <ContextMenu>
         <ContextMenuTrigger asChild>
           <div
-            className="flex h-7 w-full items-center gap-1.5 truncate rounded-sm px-2 text-left text-[13px] text-muted-foreground hover:bg-muted hover:text-foreground"
+            aria-selected={isActive}
+            className={cn(
+              "flex h-8 w-full cursor-default items-center gap-1.5 truncate rounded-sm px-2 text-left text-[13px] text-muted-foreground outline-none hover:bg-muted hover:text-foreground focus-visible:bg-muted focus-visible:text-foreground",
+              isActive &&
+                "bg-zinc-200 text-zinc-950 hover:bg-zinc-200 [&_*]:text-zinc-950",
+            )}
+            onClick={(event) => activateNode(event.altKey)}
+            onKeyDown={(event) => {
+              if (event.key !== "Enter" && event.key !== " ") return;
+              event.preventDefault();
+              activateNode(event.altKey);
+            }}
+            role="treeitem"
             style={{ paddingLeft: `${8 + depth * 14}px` }}
+            tabIndex={0}
             title={node.label}
           >
             {hasChildren ? (
@@ -136,8 +160,11 @@ function TreeNode({
                 aria-label={
                   isExpanded ? `Collapse ${node.label}` : `Expand ${node.label}`
                 }
-                className="-mx-1 flex h-7 w-6 shrink-0 items-center justify-center"
-                onClick={(event) => toggle(node, event.altKey)}
+                className="-mx-1 flex h-8 w-7 shrink-0 items-center justify-center"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  toggle(node, event.altKey);
+                }}
                 type="button"
               >
                 {isExpanded ? (
@@ -162,17 +189,7 @@ function TreeNode({
               />
             ) : null}
             <Icon className="size-3.5 shrink-0" />
-            <button
-              className="min-w-0 flex-1 truncate text-left"
-              onClick={(event) =>
-                event.altKey && onCheckOnlyNode
-                  ? onCheckOnlyNode(node)
-                  : onOpenNode?.(node)
-              }
-              type="button"
-            >
-              {node.label}
-            </button>
+            <span className="min-w-0 flex-1 truncate text-left">{node.label}</span>
             {StatusIcon ? (
               <StatusIcon
                 aria-label={sourceStatusLabels[node.status!]}
@@ -293,6 +310,7 @@ function TreeNode({
               node={child}
               inheritedRootUri={rootUri}
               checkedSourceIds={checkedSourceIds}
+              activeNodeId={activeNodeId}
               onAddFolderToCollection={onAddFolderToCollection}
               onCopyPath={onCopyPath}
               onDeleteNode={onDeleteNode}
@@ -317,6 +335,7 @@ function TreeNode({
 }
 
 export function LibraryTree({
+  activeNodeId,
   expandedIds,
   checkedSourceIds,
   nodes,
@@ -350,12 +369,13 @@ export function LibraryTree({
   }
 
   return (
-    <div>
+    <div role="tree">
       {nodes.map((node) => (
         <TreeNode
           depth={0}
           expanded={expanded}
           checkedSourceIds={checkedSources}
+          activeNodeId={activeNodeId}
           key={node.id}
           node={node}
           onAddFolderToCollection={onAddFolderToCollection}

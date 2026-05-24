@@ -202,7 +202,7 @@ export class AudioPreviewService {
   }
 
   outputMeterSnapshot(): OutputMeterSnapshot {
-    if (!this.analyser || (this.mediaElement && !this.activeBuffer)) {
+    if (!this.analyser) {
       return { available: false, peakDb: null, rmsDb: null, level: 0 };
     }
     const samples = new Uint8Array(this.analyser.fftSize);
@@ -633,8 +633,10 @@ export class AudioPreviewService {
     startSeconds: number,
     autoplay: boolean,
   ): Promise<void> {
+    await this.ensureContext();
     const audio = this.ensureMediaElement();
     if (!this.isCurrent(requestId)) return;
+    this.ensureMediaSource(audio);
     this.activeBuffer = null;
     if (audio.src !== resolution.url) {
       audio.src = resolution.url ?? "";
@@ -701,10 +703,7 @@ export class AudioPreviewService {
   }
 
   private ensureMediaElement(): HtmlAudioElementWithSink {
-    if (this.mediaElement && !this.mediaSource) return this.mediaElement;
-    if (this.mediaElement) {
-      this.clearMediaElement();
-    }
+    if (this.mediaElement) return this.mediaElement;
     const audio = new Audio() as HtmlAudioElementWithSink;
     audio.preload = "auto";
     audio.addEventListener("ended", () => {
@@ -725,6 +724,12 @@ export class AudioPreviewService {
     audio.addEventListener("timeupdate", () => this.handleMediaTimeUpdate());
     this.mediaElement = audio;
     return audio;
+  }
+
+  private ensureMediaSource(audio: HtmlAudioElementWithSink): void {
+    if (!this.audioContext || !this.playbackGain || this.mediaSource) return;
+    this.mediaSource = this.audioContext.createMediaElementSource(audio);
+    this.mediaSource.connect(this.playbackGain);
   }
 
   private async playMediaElement(requestId: number): Promise<void> {
@@ -754,17 +759,10 @@ export class AudioPreviewService {
   private applyMediaSettings(): void {
     const audio = this.mediaElement;
     if (!audio) return;
-    const gain = processedGain(this.processing.mode, this.processing.gainDb);
     const fadeGain = this.mediaRegionFadeGain(
       audio.currentTime || this.state.playheadSeconds,
     );
-    audio.volume = Math.max(
-      0,
-      Math.min(
-        1,
-        this.processing.muted ? 0 : this.processing.outputVolume * gain * fadeGain,
-      ),
-    );
+    audio.volume = Math.max(0, Math.min(1, fadeGain));
     audio.playbackRate = this.processing.playbackRate;
     void audio.setSinkId?.(this.outputDeviceId ?? "");
   }
@@ -942,6 +940,7 @@ export class AudioPreviewService {
   private clearMediaElement(): void {
     if (!this.mediaElement) return;
     this.mediaElement.pause();
+    this.mediaSource?.disconnect();
     this.mediaElement.removeAttribute("src");
     this.mediaElement.load();
     this.mediaElement = null;
