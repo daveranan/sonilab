@@ -58,12 +58,12 @@ const fieldDescriptors: SearchFieldDescriptor[] = [
   {
     field: "format",
     detail: "File/container format",
-    values: ["wav", "mp3", "ogg", "flac", "aif"],
+    values: ["wav", "mp3", "ogg", "ogv", "opus", "flac", "aac", "m4a", "mp4", "aif"],
   },
   {
     field: "codec",
     detail: "Audio codec",
-    values: ["pcm", "mp3", "vorbis", "flac", "aiff"],
+    values: ["pcm", "mp3", "vorbis", "opus", "flac", "aac", "alac", "aiff"],
   },
   { field: "rate", detail: "Sample rate in Hz", values: ["44100", "48000", ">=48000"] },
   { field: "bitdepth", detail: "Bit depth", values: ["16", "24", ">=24"] },

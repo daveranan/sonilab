@@ -20,7 +20,31 @@ pub fn is_supported_audio_extension(path: &Path) -> bool {
         .map(|extension| {
             matches!(
                 extension.to_ascii_lowercase().as_str(),
-                "wav" | "mp3" | "ogg" | "flac" | "aac" | "m4a" | "aiff" | "aif"
+                "wav"
+                    | "wave"
+                    | "mp3"
+                    | "ogg"
+                    | "oga"
+                    | "ogv"
+                    | "opus"
+                    | "flac"
+                    | "aac"
+                    | "m4a"
+                    | "m4b"
+                    | "mp4"
+                    | "aiff"
+                    | "aif"
+                    | "aifc"
+                    | "caf"
+                    | "wma"
+                    | "wv"
+                    | "ape"
+                    | "amr"
+                    | "ac3"
+                    | "mka"
+                    | "webm"
+                    | "mkv"
+                    | "mov"
             )
         })
         .unwrap_or(false)
@@ -73,15 +97,30 @@ pub fn probe_audio_format(path: &Path) -> AudioFormatProbe {
                 probe_error: None,
             }
         }
-        None => AudioFormatProbe {
-            format: None,
-            extension,
-            container: None,
-            codec: None,
-            is_supported: false,
-            probe_error: Some("unsupported or unknown audio header".to_string()),
-        },
+        None => {
+            let format = normalize_extension_format(&extension);
+            let (container, codec) = container_codec(&format);
+            AudioFormatProbe {
+                format: Some(format),
+                extension,
+                container,
+                codec,
+                is_supported: true,
+                probe_error: None,
+            }
+        }
     }
+}
+
+fn normalize_extension_format(extension: &str) -> String {
+    match extension {
+        "wave" => "wav",
+        "aif" | "aifc" => "aiff",
+        "oga" | "ogv" => "ogg",
+        "m4b" | "mp4" => "m4a",
+        other => other,
+    }
+    .to_string()
 }
 
 fn sniff_header(header: &[u8]) -> Option<String> {
@@ -132,6 +171,17 @@ fn container_codec(format: &str) -> (Option<String>, Option<String>) {
         "aac" => (Some("adts".to_string()), Some("aac".to_string())),
         "m4a" => (Some("mp4".to_string()), Some("aac_or_alac".to_string())),
         "aiff" => (Some("aiff".to_string()), Some("pcm_or_aifc".to_string())),
+        "opus" => (Some("ogg".to_string()), Some("opus".to_string())),
+        "caf" => (Some("caf".to_string()), None),
+        "wma" => (Some("asf".to_string()), Some("wma".to_string())),
+        "wv" => (Some("wavpack".to_string()), Some("wavpack".to_string())),
+        "ape" => (Some("ape".to_string()), Some("ape".to_string())),
+        "amr" => (Some("amr".to_string()), Some("amr".to_string())),
+        "ac3" => (Some("ac3".to_string()), Some("ac3".to_string())),
+        "mka" => (Some("matroska".to_string()), None),
+        "webm" => (Some("webm".to_string()), None),
+        "mkv" => (Some("matroska".to_string()), None),
+        "mov" => (Some("quicktime".to_string()), None),
         _ => (None, None),
     }
 }
@@ -165,6 +215,32 @@ mod tests {
         assert_eq!(probe.extension, "mp3");
         assert_eq!(probe.format, Some("wav".to_string()));
 
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn ogv_is_supported_as_ogg_audio() {
+        let path = std::env::temp_dir().join("sonilabs_phase2_ogg_video_audio.ogv");
+        std::fs::write(&path, b"OggS\0\0\0").expect("write ogv probe file");
+
+        let probe = probe_audio_format(&path);
+
+        assert!(probe.is_supported);
+        assert_eq!(probe.extension, "ogv");
+        assert_eq!(probe.format, Some("ogg".to_string()));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn decoder_backed_extensions_fall_back_to_extension_format() {
+        let path = std::env::temp_dir().join("sonilabs_phase2_extension_probe.webm");
+        std::fs::write(&path, b"\x1a\x45\xdf\xa3").expect("write webm probe file");
+
+        let probe = probe_audio_format(&path);
+
+        assert!(probe.is_supported);
+        assert_eq!(probe.format, Some("webm".to_string()));
+        assert_eq!(probe.probe_error, None);
         let _ = std::fs::remove_file(path);
     }
 }

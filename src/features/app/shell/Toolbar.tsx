@@ -292,13 +292,25 @@ export function Toolbar({
               label="Format"
               onChange={(v) => setFilter("format", v)}
               value={filters.format}
-              values={["", "wav", "mp3", "ogg", "flac", "aif"]}
+              values={[
+                "",
+                "wav",
+                "mp3",
+                "ogg",
+                "ogv",
+                "opus",
+                "flac",
+                "aac",
+                "m4a",
+                "mp4",
+                "aif",
+              ]}
             />
             <Select
               label="Codec"
               onChange={(v) => setFilter("codec", v)}
               value={filters.codec}
-              values={["", "pcm", "mp3", "vorbis", "flac"]}
+              values={["", "pcm", "mp3", "vorbis", "opus", "flac", "aac", "alac"]}
             />
             <Select
               label="Bit depth"

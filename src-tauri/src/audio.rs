@@ -158,6 +158,10 @@ struct WaveformFileDescriptor {
     clipping_json: Option<String>,
 }
 
+struct WaveformSource {
+    path: String,
+}
+
 struct WavInfo {
     audio_format: u16,
     channels: u16,
@@ -343,9 +347,8 @@ pub fn get_waveform_peaks_with_sidecar(
 
     let asset = audio_asset(connection, asset_id)?;
     let format = asset.format.as_deref().unwrap_or("").to_ascii_lowercase();
-    let is_local_file = Path::new(&asset.path_or_url).is_file();
     let is_large_wav = (format == "wav" || format == "wave")
-        && is_local_file
+        && Path::new(&asset.path_or_url).is_file()
         && fs::metadata(&asset.path_or_url)
             .map(|metadata| metadata.len() > SPARSE_WAVEFORM_FILE_BYTES)
             .unwrap_or(false);
@@ -404,7 +407,7 @@ pub fn get_waveform_peaks_with_sidecar(
         return Ok(cached);
     }
 
-    if format == "wav" || format == "wave" {
+    if (format == "wav" || format == "wave") && Path::new(&asset.path_or_url).is_file() {
         return get_waveform_peaks(
             runtime,
             connection,
@@ -415,61 +418,50 @@ pub fn get_waveform_peaks_with_sidecar(
         );
     }
 
-    if is_local_file {
-        let sidecar_result = {
-            let _permit = runtime.waveform_queue.try_enter()?;
-            let token = CancellationToken::default();
-            let job_id = format!("waveform:{asset_id}");
-            runtime
-                .cancellations
-                .register(job_id.clone(), token.clone())?;
-            let _registration = AudioJobRegistration {
-                registry: &runtime.cancellations,
-                job_id,
-            };
-            let deadline =
-                JobDeadline::new(std::time::Duration::from_secs(WAVEFORM_DEADLINE_SECONDS));
-            if cfg!(target_os = "macos") {
-                generate_ffmpeg_wav_peaks(
-                    connection,
-                    cache_root,
-                    resource_dir,
-                    &asset,
-                    content_key,
-                    channel_mode,
-                    samples_per_peak,
-                    &token,
-                    &deadline,
-                )
-            } else {
-                generate_audiowaveform_peaks(
-                    connection,
-                    cache_root,
-                    resource_dir,
-                    &asset,
-                    content_key,
-                    channel_mode,
-                    samples_per_peak,
-                    &token,
-                    &deadline,
-                )
-            }
+    let source = resolve_waveform_source(connection, &asset)?;
+    let source_path = Path::new(&source.path);
+    let sidecar_result = {
+        let _permit = runtime.waveform_queue.try_enter()?;
+        let token = CancellationToken::default();
+        let job_id = format!("waveform:{asset_id}");
+        runtime
+            .cancellations
+            .register(job_id.clone(), token.clone())?;
+        let _registration = AudioJobRegistration {
+            registry: &runtime.cancellations,
+            job_id,
         };
-        match sidecar_result {
-            Ok(peaks) => return Ok(peaks),
-            Err(error) if error.contains("cancelled") => return Err(error),
-            Err(_) => {}
+        let deadline = JobDeadline::new(std::time::Duration::from_secs(WAVEFORM_DEADLINE_SECONDS));
+        generate_sidecar_waveform_peaks(
+            connection,
+            cache_root,
+            resource_dir,
+            &asset,
+            source_path,
+            content_key,
+            channel_mode,
+            samples_per_peak,
+            &token,
+            &deadline,
+        )
+    };
+    match sidecar_result {
+        Ok(peaks) => return Ok(peaks),
+        Err(error) if error.contains("cancelled") => return Err(error),
+        Err(error) => {
+            if format == "wav" || format == "wave" {
+                return get_waveform_peaks(
+                    runtime,
+                    connection,
+                    asset_id,
+                    content_key,
+                    channel_mode,
+                    samples_per_peak,
+                );
+            }
+            return Err(error);
         }
     }
-
-    get_waveform_peaks(
-        runtime,
-        connection,
-        asset_id,
-        content_key,
-        channel_mode,
-        samples_per_peak,
-    )
 }
 
 pub fn get_cached_waveform_peaks(
@@ -740,6 +732,31 @@ fn cached_cloud_preview_path(
     Ok(path.filter(|path| Path::new(path).is_file()))
 }
 
+fn resolve_waveform_source(
+    connection: &Connection,
+    asset: &AssetAudioRecord,
+) -> Result<WaveformSource, String> {
+    if Path::new(&asset.path_or_url).is_file() {
+        return Ok(WaveformSource {
+            path: asset.path_or_url.clone(),
+        });
+    }
+
+    if let Some(path) = cached_cloud_preview_path(connection, &asset.id)? {
+        return Ok(WaveformSource { path });
+    }
+
+    if !looks_like_remote_uri(&asset.path_or_url) {
+        mark_asset_unavailable(connection, &asset.id, "missing")?;
+    }
+    Err("waveform source file is unavailable".to_string())
+}
+
+fn looks_like_remote_uri(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    lower.starts_with("http://") || lower.starts_with("https://")
+}
+
 fn cached_waveform_file(
     connection: &Connection,
     asset_id: &str,
@@ -980,17 +997,126 @@ fn cache_waveform_file(
     Ok(())
 }
 
-fn generate_audiowaveform_peaks(
+fn waveform_input_format(asset: &AssetAudioRecord, source_path: &Path) -> Option<String> {
+    asset
+        .format
+        .as_deref()
+        .filter(|format| !format.trim().is_empty())
+        .or_else(|| {
+            source_path
+                .extension()
+                .and_then(|extension| extension.to_str())
+        })
+        .map(|format| format.trim().trim_start_matches('.').to_ascii_lowercase())
+}
+
+fn audiowaveform_input_format(format: Option<&str>) -> Option<&'static str> {
+    match format.unwrap_or_default().to_ascii_lowercase().as_str() {
+        "wav" | "wave" => Some("wav"),
+        "mp3" => Some("mp3"),
+        "flac" => Some("flac"),
+        "ogg" | "oga" | "ogv" => Some("ogg"),
+        "opus" => Some("opus"),
+        _ => None,
+    }
+}
+
+fn generate_sidecar_waveform_peaks(
     connection: &Connection,
     cache_root: &Path,
     resource_dir: Option<&Path>,
     asset: &AssetAudioRecord,
+    source_path: &Path,
     content_key: &str,
     channel_mode: &str,
     samples_per_peak: i64,
     token: &CancellationToken,
     deadline: &JobDeadline,
 ) -> Result<WaveformPeakData, String> {
+    let input_format = waveform_input_format(asset, source_path);
+    let prefer_ffmpeg =
+        cfg!(target_os = "macos") || audiowaveform_input_format(input_format.as_deref()).is_none();
+    let mut errors = Vec::new();
+
+    if !prefer_ffmpeg {
+        match generate_audiowaveform_peaks(
+            connection,
+            cache_root,
+            resource_dir,
+            asset,
+            source_path,
+            input_format.as_deref(),
+            content_key,
+            channel_mode,
+            samples_per_peak,
+            token,
+            deadline,
+        ) {
+            Ok(peaks) => return Ok(peaks),
+            Err(error) if error.contains("cancelled") => return Err(error),
+            Err(error) => errors.push(error),
+        }
+    }
+
+    match generate_ffmpeg_wav_peaks(
+        connection,
+        cache_root,
+        resource_dir,
+        asset,
+        source_path,
+        content_key,
+        channel_mode,
+        samples_per_peak,
+        token,
+        deadline,
+    ) {
+        Ok(peaks) => return Ok(peaks),
+        Err(error) if error.contains("cancelled") => return Err(error),
+        Err(error) => errors.push(error),
+    }
+
+    if prefer_ffmpeg {
+        match generate_audiowaveform_peaks(
+            connection,
+            cache_root,
+            resource_dir,
+            asset,
+            source_path,
+            input_format.as_deref(),
+            content_key,
+            channel_mode,
+            samples_per_peak,
+            token,
+            deadline,
+        ) {
+            Ok(peaks) => return Ok(peaks),
+            Err(error) if error.contains("cancelled") => return Err(error),
+            Err(error) => errors.push(error),
+        }
+    }
+
+    Err(format!(
+        "waveform decoder failed for {}: {}",
+        source_path.display(),
+        errors.join("; ")
+    ))
+}
+
+fn generate_audiowaveform_peaks(
+    connection: &Connection,
+    cache_root: &Path,
+    resource_dir: Option<&Path>,
+    asset: &AssetAudioRecord,
+    source_path: &Path,
+    input_format: Option<&str>,
+    content_key: &str,
+    channel_mode: &str,
+    samples_per_peak: i64,
+    token: &CancellationToken,
+    deadline: &JobDeadline,
+) -> Result<WaveformPeakData, String> {
+    let input_format = audiowaveform_input_format(input_format)
+        .ok_or_else(|| "audiowaveform does not support this input format".to_string())?;
     let audiowaveform = resolve_audiowaveform(resource_dir)?;
     let cache_key = waveform_cache_key(content_key, channel_mode, samples_per_peak);
     let waveform_dir = cache_root.join("waveforms");
@@ -999,8 +1125,10 @@ fn generate_audiowaveform_peaks(
 
     if !dat_path.is_file() {
         let mut args = vec![
+            "--input-format".to_string(),
+            input_format.to_string(),
             "-i".to_string(),
-            asset.path_or_url.clone(),
+            source_path.to_string_lossy().to_string(),
             "-o".to_string(),
             dat_path.to_string_lossy().to_string(),
             "-z".to_string(),
@@ -1035,6 +1163,7 @@ fn generate_ffmpeg_wav_peaks(
     cache_root: &Path,
     resource_dir: Option<&Path>,
     asset: &AssetAudioRecord,
+    source_path: &Path,
     content_key: &str,
     channel_mode: &str,
     samples_per_peak: i64,
@@ -1055,7 +1184,7 @@ fn generate_ffmpeg_wav_peaks(
             "error".to_string(),
             "-y".to_string(),
             "-i".to_string(),
-            asset.path_or_url.clone(),
+            source_path.to_string_lossy().to_string(),
             "-map".to_string(),
             "0:a:0".to_string(),
             "-vn".to_string(),
@@ -2085,17 +2214,37 @@ mod tests {
     }
 
     fn insert_fixture_asset(connection: &Connection) -> String {
-        let fixture_path = std::env::current_dir()
+        let fixture_path = fixture_audio_path("short-tone.wav");
+        insert_fixture_asset_at_path(
+            connection,
+            "asset_test",
+            "fixture-key",
+            &fixture_path,
+            "wav",
+        )
+    }
+
+    fn fixture_audio_path(file_name: &str) -> PathBuf {
+        std::env::current_dir()
             .expect("read current directory")
             .join("..")
             .join("test-fixtures")
             .join("audio")
-            .join("short-tone.wav")
+            .join(file_name)
             .canonicalize()
-            .expect("canonicalize fixture path");
+            .expect("canonicalize fixture path")
+    }
+
+    fn insert_fixture_asset_at_path(
+        connection: &Connection,
+        asset_id: &str,
+        stable_key: &str,
+        fixture_path: &Path,
+        format: &str,
+    ) -> String {
         connection
             .execute(
-                "INSERT INTO sources (id, kind, provider, display_name, root_uri)
+                "INSERT OR IGNORE INTO sources (id, kind, provider, display_name, root_uri)
                  VALUES ('source_test', 'local', 'local', 'Fixtures', 'fixtures')",
                 [],
             )
@@ -2105,14 +2254,22 @@ mod tests {
                 "INSERT INTO assets (
                     id, source_id, stable_key, path_or_url, name, format, duration_seconds,
                     channels, availability
-                 ) VALUES (
-                    'asset_test', 'source_test', 'fixture-key', ?1, 'short-tone.wav', 'wav',
-                    0.5, 1, 'available'
-                 )",
-                params![fixture_path.to_string_lossy()],
+                  ) VALUES (
+                    ?1, 'source_test', ?2, ?3, ?4, ?5, 0.5, 1, 'available'
+                  )",
+                params![
+                    asset_id,
+                    stable_key,
+                    fixture_path.to_string_lossy(),
+                    fixture_path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("fixture"),
+                    format,
+                ],
             )
             .expect("insert asset");
-        "asset_test".to_string()
+        asset_id.to_string()
     }
 
     fn insert_large_wav_asset(connection: &Connection, fixture_path: &Path) -> String {
@@ -2243,6 +2400,112 @@ mod tests {
         assert!(cached.cached);
         assert_eq!(peaks.channels.len(), 2);
         assert!(!peaks.channels[0].maximums.is_empty());
+    }
+
+    #[test]
+    fn generates_non_wav_waveforms_with_decoder_sidecar() {
+        let resource_dir = std::env::current_dir().expect("read current directory");
+        if resolve_audiowaveform(Some(&resource_dir)).is_err()
+            && resolve_ffmpeg(Some(&resource_dir)).is_err()
+        {
+            return;
+        }
+
+        let connection = test_connection();
+        let runtime = test_runtime();
+        let cache_root =
+            std::env::temp_dir().join(format!("sonilabs_sidecar_waveform_{}", std::process::id()));
+        let mp3_path = fixture_audio_path("short-tone.mp3");
+        let ogv_path =
+            std::env::temp_dir().join(format!("sonilabs_short_tone_{}.ogv", std::process::id()));
+        fs::copy(fixture_audio_path("short-tone.ogg"), &ogv_path).expect("copy ogv fixture");
+
+        for (asset_id, content_key, path, format) in [
+            ("asset_mp3", "fixture-mp3-key", mp3_path.as_path(), "mp3"),
+            ("asset_ogv", "fixture-ogv-key", ogv_path.as_path(), "ogg"),
+        ] {
+            let asset_id =
+                insert_fixture_asset_at_path(&connection, asset_id, content_key, path, format);
+            let peaks = get_waveform_peaks_with_sidecar(
+                &runtime,
+                &connection,
+                &cache_root,
+                Some(&resource_dir),
+                &asset_id,
+                content_key,
+                "source",
+                256,
+            )
+            .expect("generate sidecar waveform");
+
+            assert!(!peaks.channels.is_empty());
+            assert!(!peaks.channels[0].maximums.is_empty());
+            assert!(!peaks.peak_file_path.is_empty());
+        }
+
+        let _ = fs::remove_file(ogv_path);
+        let _ = fs::remove_dir_all(cache_root);
+    }
+
+    #[test]
+    fn generates_m4a_waveform_with_ffmpeg_fallback_when_available() {
+        let resource_dir = std::env::current_dir().expect("read current directory");
+        let Ok(ffmpeg) = resolve_ffmpeg(Some(&resource_dir)) else {
+            return;
+        };
+        let m4a_path =
+            std::env::temp_dir().join(format!("sonilabs_short_tone_{}.m4a", std::process::id()));
+        let source_wav = fixture_audio_path("short-tone.wav");
+        let mut command = Command::new(ffmpeg);
+        command.args(vec![
+            "-hide_banner".to_string(),
+            "-loglevel".to_string(),
+            "error".to_string(),
+            "-y".to_string(),
+            "-i".to_string(),
+            source_wav.to_string_lossy().to_string(),
+            "-c:a".to_string(),
+            "aac".to_string(),
+            m4a_path.to_string_lossy().to_string(),
+        ]);
+        #[cfg(target_os = "windows")]
+        command.creation_flags(CREATE_NO_WINDOW);
+        let Ok(output) = command.output() else {
+            return;
+        };
+        if !output.status.success() {
+            let _ = fs::remove_file(&m4a_path);
+            return;
+        }
+
+        let connection = test_connection();
+        let asset_id = insert_fixture_asset_at_path(
+            &connection,
+            "asset_m4a",
+            "fixture-m4a-key",
+            &m4a_path,
+            "m4a",
+        );
+        let runtime = test_runtime();
+        let cache_root =
+            std::env::temp_dir().join(format!("sonilabs_m4a_waveform_{}", std::process::id()));
+        let peaks = get_waveform_peaks_with_sidecar(
+            &runtime,
+            &connection,
+            &cache_root,
+            Some(&resource_dir),
+            &asset_id,
+            "fixture-m4a-key",
+            "source",
+            256,
+        )
+        .expect("generate m4a waveform through ffmpeg");
+
+        assert!(!peaks.channels.is_empty());
+        assert!(!peaks.channels[0].maximums.is_empty());
+        assert!(!peaks.peak_file_path.is_empty());
+        let _ = fs::remove_file(m4a_path);
+        let _ = fs::remove_dir_all(cache_root);
     }
 
     #[test]
