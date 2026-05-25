@@ -130,7 +130,11 @@ function TreeNode({
       toggle(node, recursive);
       return;
     }
-    recursive && onCheckOnlyNode ? onCheckOnlyNode(node) : onOpenNode?.(node);
+    if (recursive && onCheckOnlyNode) {
+      onCheckOnlyNode(node);
+      return;
+    }
+    onOpenNode?.(node);
   };
 
   return (
