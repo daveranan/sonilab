@@ -121,6 +121,12 @@ export class AudioPreviewService {
   private tempLoopPreview: TempLoopPreview | null = null;
   private mediaRegionFrame: number | null = null;
   private outputDeviceId: string | null = null;
+  private mediaElementSinkId: string | null = null;
+  private mediaElementSinkPendingId: string | null = null;
+  private mediaElementSinkFailedId: string | null = null;
+  private deviceChangeMonitorInstalled = false;
+  private deviceRecoveryTimer: number | null = null;
+  private recoveringPlaybackOutput = false;
 
   subscribe(listener: Listener): () => void {
     this.listeners.add(listener);
@@ -504,12 +510,24 @@ export class AudioPreviewService {
 
   async setOutputDevice(deviceId: string | null): Promise<boolean> {
     this.outputDeviceId = deviceId?.trim() || null;
-    await this.mediaElement?.setSinkId?.(this.outputDeviceId ?? "");
-    const context = await this.ensureContext();
-    const contextWithSink = context as AudioContextWithSink;
-    if (!contextWithSink.setSinkId) return false;
-    await contextWithSink.setSinkId(this.outputDeviceId ?? "");
-    return true;
+    this.resetMediaSinkTracking();
+    try {
+      const sinkId = this.outputDeviceId ?? "";
+      await this.mediaElement?.setSinkId?.(sinkId);
+      if (this.mediaElement?.setSinkId) this.mediaElementSinkId = sinkId;
+      const context = await this.ensureContext();
+      const contextWithSink = context as AudioContextWithSink;
+      if (!contextWithSink.setSinkId) return false;
+      await contextWithSink.setSinkId(sinkId);
+      return true;
+    } catch (error) {
+      this.outputDeviceId = null;
+      this.resetMediaSinkTracking();
+      await this.mediaElement?.setSinkId?.("")?.catch(() => undefined);
+      const contextWithSink = this.audioContext as AudioContextWithSink | null;
+      await contextWithSink?.setSinkId?.("")?.catch(() => undefined);
+      throw error;
+    }
   }
 
   seek(seconds: number): void {
@@ -685,9 +703,19 @@ export class AudioPreviewService {
 
   private async ensureContext(): Promise<AudioContext> {
     this.audioContext ??= new AudioContext();
+    this.startDeviceChangeMonitor();
     if (this.outputDeviceId) {
       const contextWithSink = this.audioContext as AudioContextWithSink;
-      await contextWithSink.setSinkId?.(this.outputDeviceId);
+      try {
+        await contextWithSink.setSinkId?.(this.outputDeviceId);
+      } catch (error) {
+        logger.warn("Audio context output routing failed", {
+          outputDevice: "custom",
+          error: error instanceof Error ? error.message : String(error),
+        });
+        this.outputDeviceId = null;
+        this.resetMediaSinkTracking();
+      }
     }
     if (!this.playbackGain || !this.masterGain || !this.analyser) {
       this.playbackGain = this.audioContext.createGain();
@@ -704,6 +732,7 @@ export class AudioPreviewService {
 
   private ensureMediaElement(): HtmlAudioElementWithSink {
     if (this.mediaElement) return this.mediaElement;
+    this.startDeviceChangeMonitor();
     const audio = new Audio() as HtmlAudioElementWithSink;
     audio.preload = "auto";
     audio.addEventListener("ended", () => {
@@ -722,6 +751,7 @@ export class AudioPreviewService {
       });
     });
     audio.addEventListener("timeupdate", () => this.handleMediaTimeUpdate());
+    this.resetMediaSinkTracking();
     this.mediaElement = audio;
     return audio;
   }
@@ -735,6 +765,7 @@ export class AudioPreviewService {
   private async playMediaElement(requestId: number): Promise<void> {
     const audio = this.mediaElement;
     if (!audio) return;
+    await this.resumeContextForPlayback();
     this.applyMediaSettings();
     this.seekMediaIntoPlayableRegion();
     await audio.play();
@@ -752,6 +783,17 @@ export class AudioPreviewService {
     this.startMediaRegionMonitor();
   }
 
+  private async resumeContextForPlayback(): Promise<void> {
+    if (!this.audioContext || this.audioContext.state !== "suspended") return;
+    try {
+      await this.audioContext.resume();
+    } catch (error) {
+      logger.warn("Audio context resume failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   private handleMediaTimeUpdate(): void {
     this.enforceMediaRegionBounds();
   }
@@ -764,7 +806,47 @@ export class AudioPreviewService {
     );
     audio.volume = Math.max(0, Math.min(1, fadeGain));
     audio.playbackRate = this.processing.playbackRate;
-    void audio.setSinkId?.(this.outputDeviceId ?? "");
+    this.applyMediaSink(audio);
+  }
+
+  private applyMediaSink(audio: HtmlAudioElementWithSink): void {
+    if (!audio.setSinkId) return;
+    const sinkId = this.outputDeviceId ?? "";
+    if (
+      this.mediaElementSinkId === sinkId ||
+      this.mediaElementSinkPendingId === sinkId ||
+      this.mediaElementSinkFailedId === sinkId
+    ) {
+      return;
+    }
+    this.mediaElementSinkPendingId = sinkId;
+    void audio
+      .setSinkId(sinkId)
+      .then(() => {
+        if (this.mediaElement !== audio || (this.outputDeviceId ?? "") !== sinkId)
+          return;
+        this.mediaElementSinkId = sinkId;
+        this.mediaElementSinkFailedId = null;
+      })
+      .catch((error: unknown) => {
+        if (this.mediaElement !== audio || (this.outputDeviceId ?? "") !== sinkId)
+          return;
+        this.mediaElementSinkFailedId = sinkId;
+        logger.warn("Audio element output routing failed", {
+          outputDevice: sinkId ? "custom" : "default",
+          error: error instanceof Error ? error.message : String(error),
+        });
+        if (sinkId) {
+          this.outputDeviceId = null;
+          this.resetMediaSinkTracking();
+          this.schedulePlaybackOutputRecovery();
+        }
+      })
+      .finally(() => {
+        if (this.mediaElementSinkPendingId === sinkId) {
+          this.mediaElementSinkPendingId = null;
+        }
+      });
   }
 
   private applyMediaLooping(): void {
@@ -842,6 +924,7 @@ export class AudioPreviewService {
 
   private startBuffer(buffer: AudioBuffer, offsetSeconds: number): void {
     if (!this.audioContext || !this.playbackGain) return;
+    void this.resumeContextForPlayback();
     this.stopSource();
     const source = this.audioContext.createBufferSource();
     source.buffer = buffer;
@@ -945,7 +1028,70 @@ export class AudioPreviewService {
     this.mediaElement.load();
     this.mediaElement = null;
     this.mediaSource = null;
+    this.resetMediaSinkTracking();
     this.tempLoopPreview = null;
+  }
+
+  private resetMediaSinkTracking(): void {
+    this.mediaElementSinkId = null;
+    this.mediaElementSinkPendingId = null;
+    this.mediaElementSinkFailedId = null;
+  }
+
+  private startDeviceChangeMonitor(): void {
+    if (
+      this.deviceChangeMonitorInstalled ||
+      typeof navigator === "undefined" ||
+      !navigator.mediaDevices?.addEventListener
+    ) {
+      return;
+    }
+    navigator.mediaDevices.addEventListener("devicechange", () =>
+      this.schedulePlaybackOutputRecovery(),
+    );
+    this.deviceChangeMonitorInstalled = true;
+  }
+
+  private schedulePlaybackOutputRecovery(): void {
+    if (
+      typeof window === "undefined" ||
+      this.deviceRecoveryTimer !== null ||
+      this.state.status !== "playing"
+    ) {
+      return;
+    }
+    this.deviceRecoveryTimer = window.setTimeout(() => {
+      this.deviceRecoveryTimer = null;
+      void this.recoverPlaybackOutput();
+    }, 150);
+  }
+
+  private async recoverPlaybackOutput(): Promise<void> {
+    if (this.recoveringPlaybackOutput || this.state.status !== "playing") return;
+    this.recoveringPlaybackOutput = true;
+    try {
+      const requestId = this.requestId;
+      const playheadSeconds = this.currentPlayheadSeconds();
+      this.resetMediaSinkTracking();
+      await this.resumeContextForPlayback();
+      if (!this.isCurrent(requestId) || this.state.status !== "playing") return;
+      if (this.mediaElement) {
+        this.applyMediaSettings();
+        if (this.mediaElement.paused) {
+          await this.playMediaElement(requestId);
+        }
+        return;
+      }
+      if (this.activeBuffer) {
+        this.startBuffer(this.activeBuffer, playheadSeconds);
+      }
+    } catch (error) {
+      logger.warn("Audio output recovery failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      this.recoveringPlaybackOutput = false;
+    }
   }
 
   private applyGain(): void {
@@ -953,6 +1099,8 @@ export class AudioPreviewService {
     const now = this.audioContext.currentTime;
     const playbackGain = processedGain(this.processing.mode, this.processing.gainDb);
     const masterGain = this.processing.muted ? 0 : this.processing.outputVolume;
+    this.playbackGain.gain.cancelScheduledValues(now);
+    this.masterGain.gain.cancelScheduledValues(now);
     this.playbackGain.gain.setTargetAtTime(playbackGain, now, 0.01);
     this.masterGain.gain.setTargetAtTime(masterGain, now, 0.01);
   }
