@@ -257,7 +257,7 @@ export class AudioPreviewService {
       if (!this.isCurrent(requestId)) return;
       this.clearMediaElement();
       this.activeResolution = resolution;
-      if (this.shouldStreamResolution(resolution)) {
+      if (this.shouldStreamResolution()) {
         await this.prepareStreamingResolution(
           requestId,
           resolution,
@@ -636,13 +636,8 @@ export class AudioPreviewService {
     return requestId === this.requestId && !this.abortController?.signal.aborted;
   }
 
-  private shouldStreamResolution(resolution: PreviewFileResolution): boolean {
-    return (
-      resolution.mediaType === "local-file" &&
-      this.processing.mode === "original" &&
-      !this.loopRegion &&
-      Boolean(resolution.url)
-    );
+  private shouldStreamResolution(): boolean {
+    return false;
   }
 
   private async prepareStreamingResolution(
@@ -811,7 +806,8 @@ export class AudioPreviewService {
 
   private applyMediaSink(audio: HtmlAudioElementWithSink): void {
     if (!audio.setSinkId) return;
-    const sinkId = this.outputDeviceId ?? "";
+    if (!this.outputDeviceId) return;
+    const sinkId = this.outputDeviceId;
     if (
       this.mediaElementSinkId === sinkId ||
       this.mediaElementSinkPendingId === sinkId ||
@@ -836,11 +832,9 @@ export class AudioPreviewService {
           outputDevice: sinkId ? "custom" : "default",
           error: error instanceof Error ? error.message : String(error),
         });
-        if (sinkId) {
-          this.outputDeviceId = null;
-          this.resetMediaSinkTracking();
-          this.schedulePlaybackOutputRecovery();
-        }
+        this.outputDeviceId = null;
+        this.resetMediaSinkTracking();
+        this.schedulePlaybackOutputRecovery();
       })
       .finally(() => {
         if (this.mediaElementSinkPendingId === sinkId) {
