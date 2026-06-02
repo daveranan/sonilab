@@ -1636,17 +1636,26 @@ function AppShellContent() {
   );
 
   const setSearchText = useCallback(
-    (queryText: string) => updateActiveTab({ queryText }),
-    [updateActiveTab],
+    (queryText: string) => {
+      const trimmed = queryText.trim();
+      updateActiveTab(
+        activeTab?.kind === "search"
+          ? {
+              queryText,
+              label: trimmed ? `Search: ${trimmed.slice(0, 24)}` : "Search",
+              breadcrumbSegments: ["Search", trimmed || "All"],
+            }
+          : { queryText },
+      );
+    },
+    [activeTab?.kind, updateActiveTab],
   );
 
   const handleRemoveFilterChip = useCallback(
     (chipId: string) => {
-      updateActiveTab({
-        queryText: removeFilterChipFromQuery(activeTab?.queryText ?? "", chipId),
-      });
+      setSearchText(removeFilterChipFromQuery(activeTab?.queryText ?? "", chipId));
     },
-    [activeTab?.queryText, updateActiveTab],
+    [activeTab?.queryText, setSearchText],
   );
 
   const replaceActiveTab = useCallback(

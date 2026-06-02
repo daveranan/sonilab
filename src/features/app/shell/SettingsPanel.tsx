@@ -141,12 +141,16 @@ export function SettingsPanel({
     void updateFlowStatus()
       .then(setUpdateStatus)
       .catch(() => setUpdateStatus(null));
-    void refreshDiagnostics(setAppPaths, setLogExport, setDiagnosticsStatus);
     void navigator.mediaDevices
       ?.enumerateDevices()
       .then((items) => setDevices(items.filter((item) => item.kind === "audiooutput")))
       .catch(() => setDevices([]));
   }, [open, refreshCache]);
+
+  useEffect(() => {
+    if (!open || activeTab !== "diagnostics") return;
+    void refreshDiagnostics(setAppPaths, setLogExport, setDiagnosticsStatus);
+  }, [activeTab, open]);
 
   useEffect(() => {
     window.localStorage.setItem(

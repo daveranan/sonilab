@@ -9,7 +9,7 @@ import type {
   SearchFilter,
   SearchWarning,
 } from "./browseTypes";
-import { expandSearchTerms } from "./searchExpansion";
+import { expandSearchTerm } from "./searchExpansion";
 import { compareBrowseRows } from "./sortModel";
 import { isIgnoredTag } from "./tagCategories";
 
@@ -115,13 +115,15 @@ export function createDbBrowseProvider(): BrowseProvider {
           return { ...emptyBrowseResponse(request), warnings };
         }
 
-        const rows = dbRows
-          .map(databaseRowToBrowseRow)
-          .sort((a, b) => compareBrowseRows(a, b, request.sort));
+        const rows = dbRows.map(databaseRowToBrowseRow);
+        const sortedRows =
+          request.sort.key === "bestMatch"
+            ? rows
+            : rows.sort((a, b) => compareBrowseRows(a, b, request.sort));
         return {
           requestId: request.requestId,
-          rows,
-          totalCount: rows.length,
+          rows: sortedRows,
+          totalCount: sortedRows.length,
           nextCursor: null,
           warnings,
         };
@@ -156,7 +158,7 @@ function emptyBrowseResponse(request: BrowseRequest): BrowseResponse {
   };
 }
 
-function buildBackendQuery(request: BrowseRequest): string | undefined {
+export function buildBackendQuery(request: BrowseRequest): string | undefined {
   const query = request.query;
   if (!query) return undefined;
   const tagAny = query.filters.find(
@@ -194,10 +196,18 @@ function buildBackendQuery(request: BrowseRequest): string | undefined {
   }
 
   const terms = [
-    ...expandSearchTerms(query.text.filter((term) => !term.startsWith("-"))),
+    ...query.text
+      .filter((term) => !term.startsWith("-"))
+      .map(textTermToBackendExpression),
     ...query.filters.flatMap(filterToBackendTerms),
   ];
-  return terms.length > 0 ? terms.map(quoteFtsTerm).join(" ") : undefined;
+  return terms.length > 0 ? terms.join(" ") : undefined;
+}
+
+function textTermToBackendExpression(term: string): string {
+  const expanded = expandSearchTerm(term);
+  const quoted = expanded.map(quoteFtsTerm);
+  return quoted.length > 1 ? `(${quoted.join(" OR ")})` : quoted[0];
 }
 
 function filterToBackendTerms(filter: SearchFilter): string[] {
@@ -220,7 +230,7 @@ function filterToBackendTerms(filter: SearchFilter): string[] {
     filter.field === "availability" ||
     filter.field === "status"
   ) {
-    return [filter.value];
+    return [quoteFtsTerm(filter.value)];
   }
   return [];
 }

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { BrowseProvider } from "./dbBrowseProvider";
 import type { BrowseRequest, BrowseResponse, SearchQuery } from "./browseTypes";
@@ -22,6 +22,11 @@ type BrowseExecutionOptions = {
   skipCache?: boolean;
 };
 
+type BrowseResponseState = {
+  cacheKey: string;
+  response: BrowseResponse;
+};
+
 export function useDebouncedBrowse({
   provider,
   viewId,
@@ -38,11 +43,27 @@ export function useDebouncedBrowse({
   executeNow: (options?: BrowseExecutionOptions) => void;
   removeRowsById: (rowIds: Iterable<string>) => void;
 } {
-  const [response, setResponse] = useState<BrowseResponse | null>(null);
+  const [responseState, setResponseState] = useState<BrowseResponseState | null>(
+    null,
+  );
   const [loading, setLoading] = useState(false);
   const gateRef = useRef(new LatestBrowseResponseGate());
   const requestCounter = useRef(0);
   const responseCacheRef = useRef(new Map<string, BrowseResponse>());
+  const currentCacheKey = useMemo(
+    () =>
+      browseRequestCacheKey({
+        requestId: "current",
+        viewId,
+        sourceScope: query.sourceScope,
+        folderId,
+        collectionId,
+        query,
+        sort: query.sort,
+        limit,
+      }),
+    [collectionId, folderId, limit, query, viewId],
+  );
 
   const makeRequest = useCallback((): BrowseRequest => {
     requestCounter.current += 1;
@@ -67,21 +88,44 @@ export function useDebouncedBrowse({
       const cached = responseCacheRef.current.get(cacheKey);
       if (cached && !options.skipCache) {
         gateRef.current.begin(nextRequest.requestId);
-        setResponse({ ...cached, requestId: nextRequest.requestId });
+        setResponseState({
+          cacheKey,
+          response: { ...cached, requestId: nextRequest.requestId },
+        });
         setLoading(false);
         return;
       }
 
       gateRef.current.begin(nextRequest.requestId);
       setLoading(true);
-      void provider.browse(nextRequest).then((nextResponse) => {
-        if (!gateRef.current.accept(nextResponse)) return;
-        if (nextResponse.rows.length > 0) {
-          rememberResponse(responseCacheRef.current, cacheKey, nextResponse);
-        }
-        setResponse(nextResponse);
-        setLoading(false);
-      });
+      void provider
+        .browse(nextRequest)
+        .then((nextResponse) => {
+          if (!gateRef.current.accept(nextResponse)) return;
+          if (nextResponse.rows.length > 0) {
+            rememberResponse(responseCacheRef.current, cacheKey, nextResponse);
+          }
+          setResponseState({ cacheKey, response: nextResponse });
+          setLoading(false);
+        })
+        .catch((error: unknown) => {
+          const failedResponse: BrowseResponse = {
+            requestId: nextRequest.requestId,
+            rows: [],
+            totalCount: 0,
+            nextCursor: null,
+            warnings: [
+              {
+                code: "invalid-filter",
+                message: `Browse failed: ${String(error)}`,
+                token: "browse",
+              },
+            ],
+          };
+          if (!gateRef.current.accept(failedResponse)) return;
+          setResponseState({ cacheKey, response: failedResponse });
+          setLoading(false);
+        });
     },
     [provider],
   );
@@ -90,15 +134,18 @@ export function useDebouncedBrowse({
     const ids = new Set(rowIds);
     if (ids.size === 0) return;
     responseCacheRef.current.clear();
-    setResponse((current) => {
+    setResponseState((current) => {
       if (!current) return current;
-      const rows = current.rows.filter((row) => !ids.has(row.id));
-      const removedCount = current.rows.length - rows.length;
+      const rows = current.response.rows.filter((row) => !ids.has(row.id));
+      const removedCount = current.response.rows.length - rows.length;
       if (removedCount === 0) return current;
       return {
         ...current,
-        rows,
-        totalCount: Math.max(0, current.totalCount - removedCount),
+        response: {
+          ...current.response,
+          rows,
+          totalCount: Math.max(0, current.response.totalCount - removedCount),
+        },
       };
     });
   }, []);
@@ -124,6 +171,9 @@ export function useDebouncedBrowse({
     },
     [enabled, execute, makeRequest],
   );
+
+  const response =
+    responseState?.cacheKey === currentCacheKey ? responseState.response : null;
 
   return {
     response: enabled ? response : null,

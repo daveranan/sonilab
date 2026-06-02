@@ -9,6 +9,7 @@
     "opener:allow-open-path",
     "opener:allow-reveal-item-in-dir",
     "dialog:default",
+    "dialog:allow-confirm",
     "drag:default",
     "updater:default",
     "process:allow-restart",
