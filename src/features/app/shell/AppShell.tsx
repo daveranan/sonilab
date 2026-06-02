@@ -21,6 +21,7 @@ import { audioPreviewService } from "@/features/audio-preview/previewService";
 import type {
   BrowseRow,
   LazyMetadataResponse,
+  SearchQuery,
   SearchSort,
   SourceScope,
 } from "@/features/browsing/browseTypes";
@@ -993,6 +994,15 @@ function applyEnabledLocalSources(
   return scope;
 }
 
+function shouldPauseLiveBrowse(query: SearchQuery): boolean {
+  if (query.filters.length > 0) return false;
+  const positiveTerms = query.text.filter((term) => !term.startsWith("-"));
+  return (
+    positiveTerms.length > 0 &&
+    positiveTerms.every((term) => term.trim().length < 2)
+  );
+}
+
 export function AppShell() {
   return (
     <ModalManagerProvider>
@@ -1210,6 +1220,10 @@ function AppShellContent() {
       },
     };
   }, [activeIncludeUnavailable, activeSort, filteredSourceScope, searchText]);
+  const liveBrowsePaused = useMemo(
+    () => shouldPauseLiveBrowse(parsed.query),
+    [parsed.query],
+  );
   const { dispatch, activeRowId, selectedRowIds } = useBrowseSelectionStore();
   const { response, loading, executeNow, removeRowsById } = useDebouncedBrowse({
     provider,
@@ -1218,7 +1232,9 @@ function AppShellContent() {
     collectionId: activeTab?.collectionId,
     query: parsed.query,
     limit: 50_000,
+    debounceMs: 260,
     enabled: Boolean(activeTab),
+    paused: liveBrowsePaused,
   });
   const activeResponse = activeTab ? response : null;
   const browseLoading = activeTab ? loading : false;
@@ -1256,20 +1272,23 @@ function AppShellContent() {
   }, [activeRowId, dispatch, orderedRowIds, restoredActiveRowId]);
 
   useEffect(() => {
-    window.localStorage.setItem(
-      shellSessionStorageKey,
-      JSON.stringify({
-        activeRowId:
-          activeRowId ??
-          (restoredActiveRowConsumedRef.current ? null : restoredActiveRowId),
-        activeTabId,
-        browseDensity,
-        collectionExpandedIds,
-        libraryExpandedIds,
-        sidebarWidth,
-        tabs,
-      } satisfies StoredShellSession),
-    );
+    const handle = window.setTimeout(() => {
+      window.localStorage.setItem(
+        shellSessionStorageKey,
+        JSON.stringify({
+          activeRowId:
+            activeRowId ??
+            (restoredActiveRowConsumedRef.current ? null : restoredActiveRowId),
+          activeTabId,
+          browseDensity,
+          collectionExpandedIds,
+          libraryExpandedIds,
+          sidebarWidth,
+          tabs,
+        } satisfies StoredShellSession),
+      );
+    }, 250);
+    return () => window.clearTimeout(handle);
   }, [
     activeRowId,
     activeTabId,

@@ -15,6 +15,7 @@ type DebouncedBrowseOptions = {
   limit: number;
   debounceMs?: number;
   enabled?: boolean;
+  paused?: boolean;
 };
 
 type BrowseExecutionOptions = {
@@ -30,6 +31,7 @@ export function useDebouncedBrowse({
   limit,
   debounceMs = 140,
   enabled = true,
+  paused = false,
 }: DebouncedBrowseOptions): {
   response: BrowseResponse | null;
   loading: boolean;
@@ -106,10 +108,14 @@ export function useDebouncedBrowse({
       gateRef.current.begin("browse-disabled");
       return;
     }
+    if (paused) {
+      gateRef.current.begin("browse-paused");
+      return;
+    }
     const request = makeRequest();
     const handle = globalThis.setTimeout(() => execute(request), debounceMs);
     return () => globalThis.clearTimeout(handle);
-  }, [debounceMs, enabled, execute, makeRequest]);
+  }, [debounceMs, enabled, execute, makeRequest, paused]);
 
   const executeNow = useCallback(
     (options?: BrowseExecutionOptions) => {
@@ -121,7 +127,7 @@ export function useDebouncedBrowse({
 
   return {
     response: enabled ? response : null,
-    loading: enabled ? loading : false,
+    loading: enabled && !paused ? loading : false,
     executeNow,
     removeRowsById,
   };

@@ -678,6 +678,35 @@ async function invokeNativeFileDrag(
   });
 }
 
+async function startPluginFileDrag(
+  paths: string[],
+  pluginStartDrag: PluginStartDrag,
+  icon: string,
+): Promise<NativeFileDragResponse> {
+  let dragResult: PluginDragResult | null = null;
+  await pluginStartDrag(
+    {
+      item: paths,
+      icon,
+      mode: "copy",
+    },
+    (event) => {
+      dragResult = event.result;
+    },
+  );
+  if (dragResult === "Cancel" || dragResult === "Cancelled") {
+    return pluginCancelledResponse();
+  }
+  return {
+    ok: true,
+    effect: "copy",
+    error: undefined,
+    diagnostics: [
+      `CrabNebula drag-rs plugin started drag for ${paths.length} file(s).`,
+    ],
+  };
+}
+
 export async function startPreparedFilesDrag(
   filePaths: string[],
   options: {
@@ -699,77 +728,59 @@ export async function startPreparedFilesDrag(
 
   const pluginStartDrag = options.pluginStartDrag ?? startCrabnebulaDrag;
   const nativeFallback = options.nativeFallback ?? invokeNativeFileDrag;
-  if (options.preferNative) {
+  const preferNative = options.preferNative ?? paths.length > 1;
+  if (preferNative) {
+    let nativeFailure: NativeFileDragResponse;
     try {
       const native = await nativeFallback(paths);
       if (native.ok) return native;
-      return {
+      nativeFailure = {
         ...native,
         diagnostics: [
-          "Native file drag was preferred for rendered export files.",
+          "Native file drag was preferred for this file set.",
           ...native.diagnostics,
         ],
       };
     } catch (nativeError) {
-      try {
-        let dragResult: PluginDragResult | null = null;
-        await pluginStartDrag(
-          {
-            item: paths,
-            icon: options.icon ?? transparentDragIcon,
-            mode: "copy",
-          },
-          (event) => {
-            dragResult = event.result;
-          },
-        );
-        if (dragResult === "Cancel" || dragResult === "Cancelled") {
-          return pluginCancelledResponse();
-        }
-        return {
-          ok: true,
-          effect: "copy",
-          error: undefined,
-          diagnostics: [
-            `Native file drag failed: ${errorMessage(nativeError)}`,
-            `CrabNebula drag-rs plugin started drag for ${paths.length} file(s).`,
-          ],
-        };
-      } catch (pluginError) {
-        return {
-          ok: false,
-          effect: "none",
-          error: `Native file drag failed: ${errorMessage(nativeError)}`,
-          diagnostics: [
-            `CrabNebula drag-rs plugin also failed: ${errorMessage(pluginError)}`,
-          ],
-        };
-      }
+      nativeFailure = {
+        ok: false,
+        effect: "none",
+        error: `Native file drag failed: ${errorMessage(nativeError)}`,
+        diagnostics: ["Native file drag was preferred for this file set."],
+      };
+    }
+    try {
+      const plugin = await startPluginFileDrag(
+        paths,
+        pluginStartDrag,
+        options.icon ?? transparentDragIcon,
+      );
+      return {
+        ...plugin,
+        diagnostics: [
+          nativeFailure.error ?? "Native file drag did not complete.",
+          ...nativeFailure.diagnostics,
+          ...plugin.diagnostics,
+        ],
+      };
+    } catch (pluginError) {
+      return {
+        ok: false,
+        effect: "none",
+        error: nativeFailure.error ?? "Native file drag failed.",
+        diagnostics: [
+          ...nativeFailure.diagnostics,
+          `CrabNebula drag-rs plugin also failed: ${errorMessage(pluginError)}`,
+        ],
+      };
     }
   }
   try {
-    let dragResult: PluginDragResult | null = null;
-    await pluginStartDrag(
-      {
-        item: paths,
-        icon: options.icon ?? transparentDragIcon,
-        mode: "copy",
-      },
-      (event) => {
-        dragResult = event.result;
-      },
+    return await startPluginFileDrag(
+      paths,
+      pluginStartDrag,
+      options.icon ?? transparentDragIcon,
     );
-    if (dragResult === "Cancel" || dragResult === "Cancelled") {
-      return pluginCancelledResponse();
-    }
-    return {
-      ok: true,
-      effect: "copy",
-      error: undefined,
-      diagnostics: [
-        `CrabNebula drag-rs plugin started drag for ${paths.length} file(s).`,
-      ],
-    };
   } catch (pluginError) {
     const pluginDiagnostic = `CrabNebula drag-rs plugin failed: ${errorMessage(pluginError)}`;
     try {

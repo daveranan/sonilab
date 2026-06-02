@@ -1691,32 +1691,21 @@ export function BottomDockPlaceholder({
           }),
         );
         try {
-          const prepared =
-            assets.length === 1
-              ? await prepareAssetDragFile({
-                  assetId: assets[0].assetId,
-                  displayName: assets[0].displayName,
-                  format,
-                  formatSettings: canPassthroughOriginal ? {} : formatSettings,
-                  gainDb: processing.gainDb,
-                  region: null,
-                  tempFolder,
-                }).then((single) => (single ? [single] : null))
-              : await Promise.all(
-                  assets.map((asset) =>
-                    prepareAssetDragFile({
-                      assetId: asset.assetId,
-                      displayName: asset.displayName,
-                      format,
-                      formatSettings: canPassthroughOriginal ? {} : formatSettings,
-                      gainDb: processing.gainDb,
-                      region: null,
-                      tempFolder,
-                    }),
-                  ),
-                ).then((files) => files.filter((file) => file !== null));
+          const prepared = [];
+          for (const asset of assets) {
+            const file = await prepareAssetDragFile({
+              assetId: asset.assetId,
+              displayName: asset.displayName,
+              format,
+              formatSettings: canPassthroughOriginal ? {} : formatSettings,
+              gainDb: processing.gainDb,
+              region: null,
+              tempFolder,
+            });
+            if (file) prepared.push(file);
+          }
           setDragOverlay(null);
-          if (!prepared || prepared.length === 0) {
+          if (prepared.length === 0) {
             setExportStatus(
               "File drag requires Tauri; browser cannot expose OS files.",
             );
@@ -1724,7 +1713,7 @@ export function BottomDockPlaceholder({
           }
           const nativeDrag = await startPreparedFilesDrag(
             prepared.map((file) => file.path),
-            { preferNative: !canPassthroughOriginal },
+            { preferNative: !canPassthroughOriginal || prepared.length > 1 },
           );
           if (!nativeDrag.ok || nativeDrag.effect !== "copy") {
             setDragFailurePath(prepared[0]?.path ?? null);
