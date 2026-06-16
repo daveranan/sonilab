@@ -193,12 +193,19 @@ function CollectionTreeNode({
           </div>
         </ContextMenuTrigger>
         <ContextMenuContent>
-          <ContextMenuItem disabled={node.system} onSelect={() => startRenaming(node)}>
+          <ContextMenuItem
+            disabled={node.system}
+            onSelect={() => {
+              window.setTimeout(() => startRenaming(node), 0);
+            }}
+          >
             Rename collection
           </ContextMenuItem>
           <ContextMenuItem
             disabled={node.system}
-            onSelect={() => onCreateChildCollection?.(node)}
+            onSelect={() => {
+              window.setTimeout(() => onCreateChildCollection?.(node), 0);
+            }}
           >
             New nested collection
           </ContextMenuItem>

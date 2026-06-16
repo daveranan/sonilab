@@ -1,6 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 
+import { createLogger } from "@/lib/logger";
+
 import type { ActivityRow, CollectionNode } from "./libraryTypes";
+
+const logger = createLogger("collections:api");
 
 type CollectionRecord = {
   id: string;
@@ -40,6 +44,16 @@ function hasTauri(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
 
+function errorLogValue(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "string") return error;
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return String(error);
+  }
+}
+
 export async function loadCollections(): Promise<CollectionNode[] | null> {
   if (!hasTauri()) return null;
   const records = await invoke<CollectionRecord[]>("list_collections");
@@ -59,7 +73,8 @@ export async function createCollection(input: {
       sortOrder: input.sortOrder ?? 0,
     });
     return collectionRecordToNode(record);
-  } catch {
+  } catch (error) {
+    logger.error("Create collection failed", { error: errorLogValue(error) });
     return null;
   }
 }
@@ -75,7 +90,12 @@ export async function renameCollection(
       name,
     });
     return record ? collectionRecordToNode(record) : null;
-  } catch {
+  } catch (error) {
+    logger.error("Rename collection failed", {
+      id,
+      name,
+      error: errorLogValue(error),
+    });
     return null;
   }
 }
@@ -84,7 +104,8 @@ export async function deleteCollection(id: string): Promise<boolean> {
   if (!hasTauri()) return false;
   try {
     return await invoke<boolean>("delete_collection", { id });
-  } catch {
+  } catch (error) {
+    logger.error("Delete collection failed", { id, error: errorLogValue(error) });
     return false;
   }
 }
@@ -100,6 +121,21 @@ export async function addAssetsToCollection(
         collectionId,
         assetId,
         note: null,
+      }),
+    ),
+  );
+}
+
+export async function removeAssetsFromCollection(
+  collectionId: string,
+  assetIds: string[],
+): Promise<void> {
+  if (!hasTauri()) return;
+  await Promise.all(
+    assetIds.map((assetId) =>
+      invoke("remove_collection_asset", {
+        collectionId,
+        assetId,
       }),
     ),
   );

@@ -265,7 +265,7 @@ function BrowseRowComponent({
       data-row-id={row.id}
       draggable
       onDragStart={(event) => {
-        if (row.kind === "asset" && onAssetFileDragRequest) {
+        if (row.kind === "asset" && onAssetFileDragRequest && event.shiftKey) {
           event.preventDefault();
           fileDragRef.current = {
             x: event.clientX,

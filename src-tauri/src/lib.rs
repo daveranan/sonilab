@@ -960,6 +960,15 @@ fn add_collection_asset(
 }
 
 #[tauri::command]
+fn remove_collection_asset(
+    app: AppHandle,
+    collection_id: String,
+    asset_id: String,
+) -> Result<bool, String> {
+    data_repository(&app)?.remove_collection_asset(&collection_id, &asset_id)
+}
+
+#[tauri::command]
 fn add_collection_folder_ref(
     app: AppHandle,
     collection_id: String,
@@ -3218,6 +3227,7 @@ pub fn run() {
             rename_collection,
             delete_collection,
             add_collection_asset,
+            remove_collection_asset,
             add_collection_folder_ref,
             add_collection_source_ref,
             list_collection_items,

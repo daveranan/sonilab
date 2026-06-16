@@ -50,8 +50,10 @@ import {
   loadActivity,
   loadCollections,
   recordActivity,
+  removeAssetsFromCollection,
   renameCollection,
 } from "@/features/libraries/collectionActivityApi";
+import { createLogger } from "@/lib/logger";
 
 import { HeaderActions, WindowControls } from "./AppTitleBar";
 import { BottomDockPlaceholder } from "./BottomDockPlaceholder";
@@ -170,8 +172,20 @@ type IndexingProgressPayload = {
   message?: string | null;
 };
 
+const collectionLogger = createLogger("collections");
+
 function hasTauri(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+}
+
+function errorLogValue(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "string") return error;
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return String(error);
+  }
 }
 
 function mergeFreeTextWithFilterQuery(
@@ -2230,6 +2244,10 @@ function AppShellContent() {
         refreshCollections();
         return;
       }
+      if (hasTauri()) {
+        collectionLogger.error("Create collection returned no collection", { name });
+        return;
+      }
       const fallbackCollection = {
         id: `collection-${Date.now()}`,
         label: name,
@@ -2247,6 +2265,13 @@ function AppShellContent() {
           setCollections((current) => appendChildCollection(current, node.id, created));
           setRenamingCollectionId(created.id);
           refreshCollections();
+          return;
+        }
+        if (hasTauri()) {
+          collectionLogger.error("Create child collection returned no collection", {
+            parentId: node.id,
+            name,
+          });
           return;
         }
         const fallbackCollection = {
@@ -2276,6 +2301,15 @@ function AppShellContent() {
           refreshCollections();
           return;
         }
+        if (hasTauri()) {
+          setCollections((current) =>
+            renameCollectionInTree(current, node.id, node.label),
+          );
+          collectionLogger.error("Rename collection returned no collection", {
+            collectionId: node.id,
+            name,
+          });
+        }
       });
     },
     [refreshCollections],
@@ -2289,21 +2323,55 @@ function AppShellContent() {
           refreshCollections();
           return;
         }
+        if (hasTauri()) {
+          collectionLogger.error("Delete collection returned false", {
+            collectionId: node.id,
+          });
+          return;
+        }
         setCollections((current) => deleteCollectionFromTree(current, node.id));
       });
     },
     [refreshCollections],
   );
 
+  const addOrMoveAssetsToCollection = useCallback(
+    async (targetCollectionId: string, assetIds: string[]) => {
+      const ids = [...new Set(assetIds.filter(Boolean))];
+      if (ids.length === 0) return;
+      const sourceCollectionId =
+        activeTab?.kind === "collection" &&
+        activeTab.collectionId &&
+        activeTab.collectionId !== targetCollectionId
+          ? activeTab.collectionId
+          : null;
+
+      await addAssetsToCollection(targetCollectionId, ids);
+      if (sourceCollectionId) {
+        await removeAssetsFromCollection(sourceCollectionId, ids);
+      }
+    },
+    [activeTab],
+  );
+
   const handleDropAssetsIntoCollection = useCallback(
     (node: CollectionNode, assetIds: string[]) => {
-      const ids = assetIds.filter(Boolean);
+      const ids = [...new Set(assetIds.filter(Boolean))];
       if (ids.length === 0) return;
-      void addAssetsToCollection(node.id, ids)
-        .then(() => refreshCollections())
-        .catch(() => undefined);
+      void addOrMoveAssetsToCollection(node.id, ids)
+        .then(() => {
+          refreshCollections();
+          executeNow({ skipCache: true });
+        })
+        .catch((error) => {
+          collectionLogger.error("Drop assets into collection failed", {
+            collectionId: node.id,
+            assetCount: ids.length,
+            error: errorLogValue(error),
+          });
+        });
     },
-    [refreshCollections],
+    [addOrMoveAssetsToCollection, executeNow, refreshCollections],
   );
 
   const collectionTargetFromRows = useCallback(
@@ -2356,14 +2424,30 @@ function AppShellContent() {
       modalManager.close("collection-picker");
       void Promise.all([
         assetIds.length > 0
-          ? addAssetsToCollection(node.id, assetIds)
+          ? addOrMoveAssetsToCollection(node.id, assetIds)
           : Promise.resolve(),
         ...folderIds.map((folderId) => addFolderRefToCollection(node.id, folderId)),
       ])
-        .then(() => refreshCollections())
-        .catch(() => undefined);
+        .then(() => {
+          refreshCollections();
+          executeNow({ skipCache: true });
+        })
+        .catch((error) => {
+          collectionLogger.error("Add selection to collection failed", {
+            collectionId: node.id,
+            assetCount: assetIds.length,
+            folderCount: folderIds.length,
+            error: errorLogValue(error),
+          });
+        });
     },
-    [collectionPickerTarget, modalManager, refreshCollections],
+    [
+      addOrMoveAssetsToCollection,
+      collectionPickerTarget,
+      executeNow,
+      modalManager,
+      refreshCollections,
+    ],
   );
 
   const handleCreateCollectionFromPicker = useCallback(() => {
@@ -2374,6 +2458,12 @@ function AppShellContent() {
         id: `collection-${Date.now()}`,
         label: name,
       };
+      if (!created && hasTauri()) {
+        collectionLogger.error("Create collection from picker returned no collection", {
+          name,
+        });
+        return;
+      }
       if (!created) setCollections((current) => [...current, target]);
       handleAddSelectionToCollection(target);
     });
@@ -2383,10 +2473,19 @@ function AppShellContent() {
     (node: CollectionNode, folderId: string) => {
       if (!folderId) return;
       void addFolderRefToCollection(node.id, folderId)
-        .then(() => refreshCollections())
-        .catch(() => undefined);
+        .then(() => {
+          refreshCollections();
+          executeNow({ skipCache: true });
+        })
+        .catch((error) => {
+          collectionLogger.error("Drop folder into collection failed", {
+            collectionId: node.id,
+            folderId,
+            error: errorLogValue(error),
+          });
+        });
     },
-    [refreshCollections],
+    [executeNow, refreshCollections],
   );
 
   const handleRestoreActivity = useCallback(

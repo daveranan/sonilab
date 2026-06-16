@@ -1198,6 +1198,33 @@ impl DataRepository {
         Ok(item)
     }
 
+    pub fn remove_collection_asset(
+        &self,
+        collection_id: &str,
+        asset_id: &str,
+    ) -> Result<bool, String> {
+        let changed = self
+            .connection
+            .execute(
+                "DELETE FROM collection_items
+                 WHERE collection_id = ?1
+                   AND item_kind = 'asset'
+                   AND asset_id = ?2",
+                params![collection_id, asset_id],
+            )
+            .map_err(|error| error.to_string())?;
+        if changed > 0 {
+            self.connection
+                .execute(
+                    "UPDATE collections SET updated_at = CURRENT_TIMESTAMP WHERE id = ?1",
+                    params![collection_id],
+                )
+                .map_err(|error| error.to_string())?;
+            self.index_asset_for_search(asset_id)?;
+        }
+        Ok(changed > 0)
+    }
+
     pub fn add_collection_folder_ref(
         &self,
         collection_id: &str,
@@ -1910,6 +1937,18 @@ mod tests {
                 .len(),
             2
         );
+        assert!(repo
+            .remove_collection_asset(&impacts.id, &asset.id)
+            .expect("remove asset item"));
+        assert_eq!(
+            repo.list_collection_items(&impacts.id)
+                .expect("list collection items after remove")
+                .len(),
+            1
+        );
+        assert!(!repo
+            .remove_collection_asset(&impacts.id, &asset.id)
+            .expect("remove missing asset item"));
     }
 
     #[test]
