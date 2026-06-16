@@ -173,7 +173,9 @@ function CollectionTreeNode({
                 defaultValue={node.label}
                 onBlur={commitRename}
                 onClick={(event) => event.stopPropagation()}
+                onMouseDown={(event) => event.stopPropagation()}
                 onKeyDown={(event) => {
+                  event.stopPropagation();
                   if (event.key === "Enter") {
                     event.preventDefault();
                     commitRename();
@@ -182,6 +184,7 @@ function CollectionTreeNode({
                     finishRenaming();
                   }
                 }}
+                onPointerDown={(event) => event.stopPropagation()}
                 ref={inputRef}
               />
             ) : (

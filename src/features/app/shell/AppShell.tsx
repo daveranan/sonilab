@@ -64,6 +64,7 @@ import { Toolbar } from "./Toolbar";
 import { TopSearchBar } from "./TopSearchBar";
 import {
   activateOrCreateSearchTab,
+  createSearchViewTab,
   isTabDirty,
   pushNavigationHistory,
   restoreTabInActiveSlot,
@@ -225,7 +226,12 @@ function appendChildCollection(
 ): CollectionNode[] {
   return nodes.map((node) =>
     node.id === parentId
-      ? { ...node, children: [...(node.children ?? []), child] }
+      ? {
+          ...node,
+          children: findCollectionNode(node.children ?? [], child.id)
+            ? node.children
+            : [...(node.children ?? []), child],
+        }
       : {
           ...node,
           children: node.children
@@ -904,11 +910,11 @@ const initialTabs: AppViewTab[] = [
     savedQueryText: "",
     sort: defaultFolderSort,
     savedSort: defaultFolderSort,
-    sourceScope: { kind: "source", sourceId: "__empty_start__" },
-    savedSourceScope: { kind: "source", sourceId: "__empty_start__" },
+    sourceScope: { kind: "local" },
+    savedSourceScope: { kind: "local" },
     includeUnavailable: false,
     savedIncludeUnavailable: false,
-    breadcrumbSegments: [],
+    breadcrumbSegments: ["Local"],
   },
 ];
 const shellSessionStorageKey = "sonilabs.appShellSession.v2";
@@ -945,7 +951,7 @@ function readStoredShellSession(): StoredShellSession {
 
 function restoredTabs(session: StoredShellSession): AppViewTab[] {
   return Array.isArray(session.tabs) && session.tabs.length > 0
-    ? session.tabs
+    ? session.tabs.map(normalizeRestoredTab)
     : initialTabs;
 }
 
@@ -953,6 +959,27 @@ function restoredActiveTabId(session: StoredShellSession, tabs: AppViewTab[]): s
   return tabs.some((tab) => tab.id === session.activeTabId)
     ? session.activeTabId!
     : (tabs[0]?.id ?? "empty-start");
+}
+
+function normalizeRestoredTab(tab: AppViewTab): AppViewTab {
+  if (tab.kind === "search") {
+    return {
+      ...tab,
+      sourceScope: { kind: "local" },
+      savedSourceScope: { kind: "local" },
+    };
+  }
+  if (tab.id === "empty-start") {
+    return {
+      ...tab,
+      sourceScope: { kind: "local" },
+      savedSourceScope: { kind: "local" },
+      breadcrumbSegments: tab.breadcrumbSegments.length
+        ? tab.breadcrumbSegments
+        : ["Local"],
+    };
+  }
+  return tab;
 }
 
 function restoredStringArray(value: unknown, fallback: string[]): string[] {
@@ -1638,6 +1665,16 @@ function AppShellContent() {
   const setSearchText = useCallback(
     (queryText: string) => {
       const trimmed = queryText.trim();
+      if (activeTab?.kind !== "search" && trimmed) {
+        const nextTab = createSearchViewTab(queryText, activeIncludeUnavailable);
+        setTabs((current) => {
+          rememberNavigationTarget(current, nextTab);
+          const next = activateOrCreateSearchTab(current, nextTab);
+          setActiveTabId(next.activeTabId);
+          return next.tabs;
+        });
+        return;
+      }
       updateActiveTab(
         activeTab?.kind === "search"
           ? {
@@ -1648,7 +1685,12 @@ function AppShellContent() {
           : { queryText },
       );
     },
-    [activeTab?.kind, updateActiveTab],
+    [
+      activeIncludeUnavailable,
+      activeTab?.kind,
+      rememberNavigationTarget,
+      updateActiveTab,
+    ],
   );
 
   const handleRemoveFilterChip = useCallback(
@@ -1672,34 +1714,14 @@ function AppShellContent() {
 
   const handleStartNewSearch = useCallback(() => {
     const queryText = searchText.trim();
-    const id = searchTabId(queryText);
-    const nextTab: AppViewTab = {
-      id,
-      kind: "search",
-      label: queryText ? `Search: ${queryText.slice(0, 24)}` : "Search",
-      closeable: true,
-      queryText,
-      savedQueryText: queryText,
-      sort: defaultSearchSort,
-      savedSort: defaultSearchSort,
-      sourceScope: activeTab?.sourceScope ?? { kind: "all" },
-      savedSourceScope: activeTab?.sourceScope ?? { kind: "all" },
-      includeUnavailable: activeIncludeUnavailable,
-      savedIncludeUnavailable: activeIncludeUnavailable,
-      breadcrumbSegments: ["Search", queryText || "All"],
-    };
+    const nextTab = createSearchViewTab(queryText, activeIncludeUnavailable);
     setTabs((current) => {
       rememberNavigationTarget(current, nextTab);
       const next = activateOrCreateSearchTab(current, nextTab);
       setActiveTabId(next.activeTabId);
       return next.tabs;
     });
-  }, [
-    activeIncludeUnavailable,
-    activeTab?.sourceScope,
-    rememberNavigationTarget,
-    searchText,
-  ]);
+  }, [activeIncludeUnavailable, rememberNavigationTarget, searchText]);
 
   const handleSubmitSearch = useCallback(() => {
     const queryText = searchText.trim();
@@ -2201,6 +2223,9 @@ function AppShellContent() {
     const name = uniqueCollectionName(collections);
     void createCollection({ name }).then((created) => {
       if (created) {
+        setCollections((current) =>
+          findCollectionNode(current, created.id) ? current : [...current, created],
+        );
         setRenamingCollectionId(created.id);
         refreshCollections();
         return;
@@ -2219,6 +2244,7 @@ function AppShellContent() {
       const name = uniqueCollectionName(node.children ?? []);
       void createCollection({ parentId: node.id, name }).then((created) => {
         if (created) {
+          setCollections((current) => appendChildCollection(current, node.id, created));
           setRenamingCollectionId(created.id);
           refreshCollections();
           return;
@@ -2241,12 +2267,15 @@ function AppShellContent() {
     (node: CollectionNode, nextName: string) => {
       const name = nextName.trim();
       if (!name || name === node.label) return;
+      setCollections((current) => renameCollectionInTree(current, node.id, name));
       void renameCollection(node.id, name).then((renamed) => {
         if (renamed) {
+          setCollections((current) =>
+            renameCollectionInTree(current, node.id, renamed.label),
+          );
           refreshCollections();
           return;
         }
-        setCollections((current) => renameCollectionInTree(current, node.id, name));
       });
     },
     [refreshCollections],

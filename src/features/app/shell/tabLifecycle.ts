@@ -1,4 +1,5 @@
 import type { SearchSort, SourceScope } from "@/features/browsing/browseTypes";
+import { defaultSearchSort } from "@/features/browsing/sortModel";
 
 import type { ViewTabModel } from "./ViewTabs";
 
@@ -29,6 +30,28 @@ export type NavigationHistory = {
 export function searchTabId(queryText: string): string {
   const normalized = queryText.trim().toLowerCase().replace(/\s+/g, " ");
   return `search-${encodeURIComponent(normalized || "all").slice(0, 96)}`;
+}
+
+export function createSearchViewTab(
+  queryText: string,
+  includeUnavailable = false,
+): AppViewTab {
+  const labelText = queryText.trim();
+  return {
+    id: searchTabId(queryText),
+    kind: "search",
+    label: labelText ? `Search: ${labelText.slice(0, 24)}` : "Search",
+    closeable: true,
+    queryText,
+    savedQueryText: queryText,
+    sort: defaultSearchSort,
+    savedSort: defaultSearchSort,
+    sourceScope: { kind: "local" },
+    savedSourceScope: { kind: "local" },
+    includeUnavailable,
+    savedIncludeUnavailable: includeUnavailable,
+    breadcrumbSegments: ["Search", labelText || "All"],
+  };
 }
 
 export function sameNavigationTarget(
@@ -155,7 +178,10 @@ export function activateOrCreateSearchTab(
   nextTab: AppViewTab,
 ): { tabs: AppViewTab[]; activeTabId: string } {
   if (tabs.some((tab) => tab.id === nextTab.id)) {
-    return { tabs, activeTabId: nextTab.id };
+    return {
+      tabs: tabs.map((tab) => (tab.id === nextTab.id ? nextTab : tab)),
+      activeTabId: nextTab.id,
+    };
   }
   return { tabs: [...tabs, nextTab], activeTabId: nextTab.id };
 }

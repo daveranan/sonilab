@@ -4,6 +4,7 @@ import { defaultFolderSort, defaultSearchSort } from "@/features/browsing/sortMo
 
 import {
   activateOrCreateSearchTab,
+  createSearchViewTab,
   pushNavigationHistory,
   replaceActiveViewTab,
   restoreTabInActiveSlot,
@@ -56,6 +57,35 @@ describe("tab lifecycle", () => {
 
     expect(next.activeTabId).toBe(searchTab.id);
     expect(next.tabs).toHaveLength(2);
+  });
+
+  it("creates global local search tabs", () => {
+    const next = createSearchViewTab("fire");
+
+    expect(next).toMatchObject({
+      id: "search-fire",
+      label: "Search: fire",
+      queryText: "fire",
+      sourceScope: { kind: "local" },
+      breadcrumbSegments: ["Search", "fire"],
+    });
+  });
+
+  it("refreshes an existing search tab when reactivated", () => {
+    const staleSearch = {
+      ...createSearchViewTab("fire"),
+      sourceScope: { kind: "source", sourceId: "__empty_start__" } as const,
+      savedSourceScope: { kind: "source", sourceId: "__empty_start__" } as const,
+    };
+    const nextSearch = createSearchViewTab(staleSearch.queryText);
+    const next = activateOrCreateSearchTab([folderTab, staleSearch], nextSearch);
+
+    expect(next.tabs).toHaveLength(2);
+    expect(next.tabs[1]).toMatchObject({
+      id: staleSearch.id,
+      sourceScope: { kind: "local" },
+      savedSourceScope: { kind: "local" },
+    });
   });
 
   it("opens a replacement tab when all tabs were closed", () => {
