@@ -392,6 +392,18 @@ export function WaveformCanvas({
     return xToSeconds(event.clientX - rect.left, viewportRef.current, rect.width);
   }, []);
 
+  const currentDurationSeconds = useCallback(
+    () =>
+      Math.max(
+        0.001,
+        peakDataRef.current?.durationSeconds ??
+          durationSeconds ??
+          audioPreviewService.getState().durationSeconds ??
+          0,
+      ),
+    [durationSeconds],
+  );
+
   const syncZoomLabels = useCallback(() => {
     const peaks = peakDataRef.current;
     const viewport = viewportRef.current;
@@ -673,6 +685,9 @@ export function WaveformCanvas({
   useEffect(() => {
     regionRef.current = region;
     if (!region) committedRegionKeyRef.current = null;
+    else if (!dragRef.current && committedRegionKeyRef.current === null) {
+      committedRegionKeyRef.current = regionKey(region);
+    }
     redraw();
   }, [redraw, region]);
 
@@ -1262,9 +1277,9 @@ export function WaveformCanvas({
             event.stopPropagation();
             return;
           }
-          const peaks = peakDataRef.current;
-          if (peaks) {
-            const fullRegion = { startSeconds: 0, endSeconds: peaks.durationSeconds };
+          const duration = currentDurationSeconds();
+          if (duration > 0) {
+            const fullRegion = { startSeconds: 0, endSeconds: duration };
             committedRegionKeyRef.current = regionKey(fullRegion);
             onRegionFadeChange?.({
               fadeInSeconds: 0,
@@ -1403,7 +1418,7 @@ export function WaveformCanvas({
               normalizeRegion(
                 pointerSeconds(event),
                 drag.regionAtStart.endSeconds,
-                peakDataRef.current?.durationSeconds ?? 0,
+                currentDurationSeconds(),
               ),
             );
           } else if (drag.mode === "resize-end" && drag.regionAtStart) {
@@ -1411,7 +1426,7 @@ export function WaveformCanvas({
               normalizeRegion(
                 drag.regionAtStart.startSeconds,
                 pointerSeconds(event),
-                peakDataRef.current?.durationSeconds ?? 0,
+                currentDurationSeconds(),
               ),
             );
           } else if (
@@ -1498,7 +1513,7 @@ export function WaveformCanvas({
               normalizeRegion(
                 startSeconds,
                 endSeconds,
-                peakDataRef.current?.durationSeconds ?? 0,
+                currentDurationSeconds(),
               ),
             );
           }
@@ -1536,10 +1551,9 @@ export function WaveformCanvas({
             );
             audioPreviewService.play();
           }
-          const peaks = peakDataRef.current;
+          const duration = currentDurationSeconds();
           if (
             drag &&
-            peaks &&
             drag.mode !== "pan" &&
             drag.mode !== "file-drag" &&
             drag.mode !== "crossfade-left" &&
@@ -1555,7 +1569,7 @@ export function WaveformCanvas({
             const committedRegion = committedRegionFromDrag(
               drag,
               rect.width,
-              peaks,
+              duration,
               viewportRef.current,
             );
             if (committedRegion) {
@@ -2369,7 +2383,7 @@ function ignoresNoteShortcut(target: EventTarget | null): boolean {
 function committedRegionFromDrag(
   drag: DragState,
   width: number,
-  peaks: WaveformPeakData,
+  durationSeconds: number,
   viewport: WaveformViewport,
 ): WaveformRegion | null {
   if (drag.mode === "file-drag") return drag.regionAtStart;
@@ -2377,14 +2391,14 @@ function committedRegionFromDrag(
     return normalizeRegion(
       xToSeconds(drag.currentX, viewport, width),
       drag.regionAtStart.endSeconds,
-      peaks.durationSeconds,
+      durationSeconds,
     );
   }
   if (drag.mode === "resize-end" && drag.regionAtStart) {
     return normalizeRegion(
       drag.regionAtStart.startSeconds,
       xToSeconds(drag.currentX, viewport, width),
-      peaks.durationSeconds,
+      durationSeconds,
     );
   }
   if (drag.mode === "select") {
@@ -2392,7 +2406,7 @@ function committedRegionFromDrag(
     return normalizeRegion(
       xToSeconds(drag.startX, viewport, width),
       xToSeconds(drag.currentX, viewport, width),
-      peaks.durationSeconds,
+      durationSeconds,
     );
   }
   return null;
