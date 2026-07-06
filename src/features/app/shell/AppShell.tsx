@@ -10,6 +10,11 @@ import type React from "react";
 import { Button } from "@/components/ui/button";
 import { commandFromKeyboardEvent } from "@/features/app/commandRegistry";
 import {
+  shouldShowImportDropOverlay,
+  sonilabsAssetDragType,
+  sonilabsFolderDragType,
+} from "@/features/dragRouting";
+import {
   checkForAppUpdate,
   checkInstallAndRelaunchUpdate,
   deleteBrowseRow,
@@ -1118,6 +1123,7 @@ function AppShellContent() {
   const inputRef = useRef<HTMLInputElement>(null);
   const collectionPickerFocusRef = useRef<HTMLButtonElement>(null);
   const exportDragActiveRef = useRef(false);
+  const internalDragActiveRef = useRef(false);
   const metadataRequestRef = useRef(0);
   const metadataRef = useRef<LazyMetadataResponse["metadataByRowId"]>({});
   const pendingMetadataRowIdsRef = useRef(new Set<string>());
@@ -1245,6 +1251,20 @@ function AppShellContent() {
     };
     window.addEventListener("sonilabs:export-drag-active", handler);
     return () => window.removeEventListener("sonilabs:export-drag-active", handler);
+  }, []);
+
+  useEffect(() => {
+    const clearInternalDrag = () => {
+      window.setTimeout(() => {
+        internalDragActiveRef.current = false;
+      }, 100);
+    };
+    window.addEventListener("dragend", clearInternalDrag, true);
+    window.addEventListener("drop", clearInternalDrag, true);
+    return () => {
+      window.removeEventListener("dragend", clearInternalDrag, true);
+      window.removeEventListener("drop", clearInternalDrag, true);
+    };
   }, []);
 
   const parsed = useMemo(() => {
@@ -1511,18 +1531,32 @@ function AppShellContent() {
       .onDragDropEvent((event) => {
         const payload = event.payload;
         if (payload.type === "over") {
-          if (exportDragActiveRef.current) return;
+          if (
+            !shouldShowImportDropOverlay({
+              exportDragActive: exportDragActiveRef.current,
+              internalDragActive: internalDragActiveRef.current,
+            })
+          ) {
+            setDropOverlayVisible(false);
+            return;
+          }
           setDropOverlayVisible(true);
           setSourceDropStatus("Drop file or folder to add to a local library.");
         }
         if (payload.type === "drop") {
           setDropOverlayVisible(false);
-          if (exportDragActiveRef.current) return;
+          const suppressImport = !shouldShowImportDropOverlay({
+            exportDragActive: exportDragActiveRef.current,
+            internalDragActive: internalDragActiveRef.current,
+          });
+          internalDragActiveRef.current = false;
+          if (suppressImport) return;
           beginImportLocalFolders(payload.paths);
         }
         if (payload.type === "leave") {
           setDropOverlayVisible(false);
           setSourceDropStatus(null);
+          internalDragActiveRef.current = false;
         }
       })
       .then((nextUnlisten) => {
@@ -1535,12 +1569,23 @@ function AppShellContent() {
   useEffect(() => {
     if (hasTauri()) return;
     const showOverlay = (event: DragEvent) => {
-      if (exportDragActiveRef.current) return;
-      if (!event.dataTransfer?.types.includes("Files")) return;
+      if (
+        !shouldShowImportDropOverlay({
+          exportDragActive: exportDragActiveRef.current,
+          internalDragActive: internalDragActiveRef.current,
+          dataTransferTypes: event.dataTransfer?.types,
+        })
+      ) {
+        setDropOverlayVisible(false);
+        return;
+      }
       event.preventDefault();
       setDropOverlayVisible(true);
     };
-    const hideOverlay = () => setDropOverlayVisible(false);
+    const hideOverlay = () => {
+      internalDragActiveRef.current = false;
+      setDropOverlayVisible(false);
+    };
     window.addEventListener("dragenter", showOverlay);
     window.addEventListener("dragover", showOverlay);
     window.addEventListener("dragleave", hideOverlay);
@@ -2736,6 +2781,8 @@ function AppShellContent() {
 
   const handleInternalRowDragStart = useCallback(
     (event: React.DragEvent, row: BrowseRow) => {
+      internalDragActiveRef.current = true;
+      setDropOverlayVisible(false);
       if (row.kind === "asset") {
         const assetIds =
           selectedRowIds.has(row.id) && selectedRowIds.size > 1
@@ -2747,11 +2794,11 @@ function AppShellContent() {
                 .map((asset) => asset.id)
             : [row.id];
         event.dataTransfer.setData(
-          "application/x-sonilabs-assets",
+          sonilabsAssetDragType,
           JSON.stringify(assetIds),
         );
       } else {
-        event.dataTransfer.setData("application/x-sonilabs-folder", row.id);
+        event.dataTransfer.setData(sonilabsFolderDragType, row.id);
         event.dataTransfer.setData("text/plain", row.path);
       }
       event.dataTransfer.effectAllowed = "copy";

@@ -19,6 +19,20 @@ export function clampPlaybackRate(value: number): number {
   return Math.min(4, Math.max(0.25, value));
 }
 
+export function pitchSemitonesToPlaybackRate(semitones: number): number {
+  return 2 ** (clampPitchSemitones(semitones) / 12);
+}
+
+export function clampPitchSemitones(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.min(12, Math.max(-12, value));
+}
+
+export function clampEqGainDb(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.min(12, Math.max(-12, value));
+}
+
 export function processedGain(mode: "original" | "processed", gainDb: number): number {
   return mode === "processed" ? dbToGain(gainDb) : 1;
 }

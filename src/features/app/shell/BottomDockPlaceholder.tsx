@@ -5,6 +5,7 @@ import {
   FolderOpen,
   Gauge,
   Info,
+  Music2,
   Pause,
   Play,
   Repeat2,
@@ -12,11 +13,12 @@ import {
   Settings2,
   SkipBack,
   SkipForward,
+  SlidersHorizontal,
   Square,
   Volume2,
   VolumeX,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
 import { Button } from "@/components/ui/button";
 import {
@@ -55,6 +57,15 @@ import { cn } from "@/lib/utils";
 import { useModalManager } from "./modalManager";
 
 const exportFormats = ["WAV", "MP3", "OGG", "FLAC", "AAC", "M4A", "MP4"];
+const eqBands: {
+  key: "lowDb" | "midDb" | "highDb";
+  label: string;
+  title: string;
+}[] = [
+  { key: "lowDb", label: "Low", title: "Low shelf gain" },
+  { key: "midDb", label: "Mid", title: "Mid bell gain" },
+  { key: "highDb", label: "High", title: "High shelf gain" },
+];
 const compactSelectClass =
   "h-7 rounded-md border border-input bg-black px-2 text-[11px] text-foreground outline-none focus-visible:border-primary";
 const compactInputClass =
@@ -216,8 +227,18 @@ async function warmWaveformOverview(row: Extract<BrowseRow, { kind: "asset" }>) 
 function normalizedFormat(value: string | null | undefined): string {
   const format = value?.toLowerCase() ?? "";
   if (format === "wave") return "wav";
-  if (format === "mp4") return "m4a";
   return format;
+}
+
+function processingIsNeutral(processing: ProcessingSettings): boolean {
+  return (
+    Math.abs(processing.gainDb) < 0.000_001 &&
+    Math.abs(processing.pitchSemitones) < 0.000_001 &&
+    (!processing.eq.enabled ||
+      (Math.abs(processing.eq.lowDb) < 0.000_001 &&
+        Math.abs(processing.eq.midDb) < 0.000_001 &&
+        Math.abs(processing.eq.highDb) < 0.000_001))
+  );
 }
 
 function OutputMeter({ meter }: { meter: OutputMeterSnapshot }) {
@@ -286,6 +307,8 @@ export function BottomDockPlaceholder({
   );
   const exportSettingsOpen = modalManager.isOpen("export-settings");
   const gainBoostOpen = modalManager.isOpen("gain-boost");
+  const equalizerOpen = modalManager.isOpen("equalizer");
+  const pitchOpen = modalManager.isOpen("pitch");
   const [exportJobs, setExportJobs] = useState<ExportJobSnapshot[]>([]);
   const [runtimeStatus, setRuntimeStatus] = useState<AudioRuntimeStatus | null>(null);
   const [dragFailurePath, setDragFailurePath] = useState<string | null>(null);
@@ -327,6 +350,12 @@ export function BottomDockPlaceholder({
   const [regionFadeOutSlope, setRegionFadeOutSlope] = useState(defaultRegionFadeSlope);
   const [region, setRegion] = useState<WaveformRegion | null>(null);
   const [regionAssetId, setRegionAssetId] = useState<string | null>(null);
+  const eqActive =
+    processing.eq.enabled &&
+    (Math.abs(processing.eq.lowDb) >= 0.000_001 ||
+      Math.abs(processing.eq.midDb) >= 0.000_001 ||
+      Math.abs(processing.eq.highDb) >= 0.000_001);
+  const pitchActive = Math.abs(processing.pitchSemitones) >= 0.000_001;
   const dispatch = useBrowseSelectionStore((state) => state.dispatch);
   const activeRowId = useBrowseSelectionStore((state) => state.activeRowId);
   const selectedRowIds = useBrowseSelectionStore((state) => state.selectedRowIds);
@@ -666,6 +695,8 @@ export function BottomDockPlaceholder({
           format: "wav",
           formatSettings: { wavBitDepth: 16 },
           gainDb: processing.gainDb,
+          eq: processing.eq,
+          pitchSemitones: processing.pitchSemitones,
           region: regionForPlayback,
           regionFadeGapSeconds,
           regionFadeInSeconds: activeRegionFadeInSeconds,
@@ -731,7 +762,9 @@ export function BottomDockPlaceholder({
       activeRegionFadeOutSeconds,
       displayAsset,
       previewState.status,
+      processing.eq,
       processing.gainDb,
+      processing.pitchSemitones,
       regionFadeGapSeconds,
       regionFadeInSlope,
       regionFadeOutSlope,
@@ -844,6 +877,10 @@ export function BottomDockPlaceholder({
           crossfadeSeconds.toFixed(5),
           crossfadeSlope.toFixed(3),
           processing.gainDb.toFixed(2),
+          processing.eq.lowDb.toFixed(2),
+          processing.eq.midDb.toFixed(2),
+          processing.eq.highDb.toFixed(2),
+          processing.pitchSemitones.toFixed(2),
           tempFolder,
         ].join(":");
         if (
@@ -875,6 +912,8 @@ export function BottomDockPlaceholder({
           format: "wav",
           formatSettings: { wavBitDepth: 16 },
           gainDb: processing.gainDb,
+          eq: processing.eq,
+          pitchSemitones: processing.pitchSemitones,
           loopCrossfadeSeconds: crossfadeSeconds,
           loopCrossfadeSlope: crossfadeSlope,
           region: activeRegion,
@@ -935,7 +974,9 @@ export function BottomDockPlaceholder({
       finishCrossfadeProgress,
       loopCrossfadeSlope,
       loopCrossfadeWidthSeconds,
+      processing.eq,
       processing.gainDb,
+      processing.pitchSemitones,
       tempFolder,
     ],
   );
@@ -1375,6 +1416,8 @@ export function BottomDockPlaceholder({
       format,
       formatSettings,
       gainDb: processing.gainDb,
+      eq: processing.eq,
+      pitchSemitones: processing.pitchSemitones,
       includeAttributionSidecar: includeSidecar,
       loopCrossfadeSeconds: activeLoopCrossfadeSeconds || null,
       loopCrossfadeSlope,
@@ -1421,7 +1464,9 @@ export function BottomDockPlaceholder({
     outputFolder,
     overwriteMode,
     preserveFolders,
+    processing.eq,
     processing.gainDb,
+    processing.pitchSemitones,
     regionFadeGapSeconds,
     regionFadeInSlope,
     regionFadeOutSlope,
@@ -1487,6 +1532,27 @@ export function BottomDockPlaceholder({
     audioPreviewService.setProcessing({ gainDb, mode: "processed" });
   }, []);
 
+  const updateEqBand = useCallback(
+    (band: "lowDb" | "midDb" | "highDb", value: number) => {
+      const current = audioPreviewService.getProcessing().eq;
+      audioPreviewService.setProcessing({
+        mode: "processed",
+        eq: { ...current, enabled: true, [band]: value },
+      });
+    },
+    [],
+  );
+
+  const resetEq = useCallback(() => {
+    audioPreviewService.setProcessing({
+      eq: { enabled: false, lowDb: 0, midDb: 0, highDb: 0 },
+    });
+  }, []);
+
+  const updatePitch = useCallback((pitchSemitones: number) => {
+    audioPreviewService.setProcessing({ pitchSemitones, mode: "processed" });
+  }, []);
+
   const handleGainSpace = useCallback(
     (event: React.KeyboardEvent<HTMLInputElement>) => {
       if (event.key === " ") event.currentTarget.blur();
@@ -1503,6 +1569,8 @@ export function BottomDockPlaceholder({
         format,
         formatSettings,
         gainDb: processing.gainDb,
+        eq: processing.eq,
+        pitchSemitones: processing.pitchSemitones,
         loopCrossfadeSeconds: activeLoopCrossfadeSeconds || null,
         loopCrossfadeSlope,
         regionFadeGapSeconds,
@@ -1536,7 +1604,9 @@ export function BottomDockPlaceholder({
     regionFadeInSlope,
     regionFadeOutSlope,
     loopCrossfadeSlope,
+    processing.eq,
     processing.gainDb,
+    processing.pitchSemitones,
     tempFolder,
   ]);
 
@@ -1554,7 +1624,7 @@ export function BottomDockPlaceholder({
       const canNativeCut =
         normalizedFormat(displayAsset.format) === "wav" &&
         normalizedFormat(format) === "wav" &&
-        Math.abs(processing.gainDb) < 0.000_001 &&
+        processingIsNeutral(processing) &&
         !activeLoopCrossfadeSeconds &&
         !hasRegionFades;
       setExportStatus(
@@ -1580,6 +1650,8 @@ export function BottomDockPlaceholder({
             format,
             formatSettings: canNativeCut ? {} : formatSettings,
             gainDb: processing.gainDb,
+            eq: processing.eq,
+            pitchSemitones: processing.pitchSemitones,
             loopCrossfadeSeconds: activeLoopCrossfadeSeconds || null,
             loopCrossfadeSlope,
             regionFadeGapSeconds,
@@ -1638,7 +1710,7 @@ export function BottomDockPlaceholder({
       format,
       formatSettings,
       loopCrossfadeSlope,
-      processing.gainDb,
+      processing,
       regionFadeGapSeconds,
       regionFadeInSlope,
       regionFadeInSeconds,
@@ -1663,7 +1735,7 @@ export function BottomDockPlaceholder({
       if (assets.length === 0) return;
       setDragFailurePath(null);
       const canPassthroughOriginal =
-        Math.abs(processing.gainDb) < 0.000_001 &&
+        processingIsNeutral(processing) &&
         assets.every(
           (asset) => normalizedFormat(asset.format) === normalizedFormat(format),
         );
@@ -1699,6 +1771,8 @@ export function BottomDockPlaceholder({
               format,
               formatSettings: canPassthroughOriginal ? {} : formatSettings,
               gainDb: processing.gainDb,
+              eq: processing.eq,
+              pitchSemitones: processing.pitchSemitones,
               region: null,
               tempFolder,
             });
@@ -1741,7 +1815,7 @@ export function BottomDockPlaceholder({
         }
       })();
     },
-    [format, formatSettings, processing.gainDb, tempFolder],
+    [format, formatSettings, processing, tempFolder],
   );
 
   useEffect(() => {
@@ -1936,7 +2010,7 @@ export function BottomDockPlaceholder({
               })
             }
             size="sm"
-            title="A/B original and processed gain"
+            title="A/B original and processed effects"
             variant={processing.mode === "processed" ? "default" : "ghost"}
           >
             {processing.mode === "processed" ? "B" : "A"}
@@ -2080,6 +2154,125 @@ export function BottomDockPlaceholder({
                   onClick={() => updateGain(0)}
                   size="icon"
                   title="Reset gain boost"
+                  variant="ghost"
+                >
+                  <RotateCcw className="size-3.5" />
+                </Button>
+              </div>
+            ) : null}
+          </div>
+          <div className="relative">
+            <Button
+              aria-expanded={equalizerOpen}
+              aria-pressed={eqActive}
+              className="h-8 gap-1 px-2 text-[11px]"
+              onClick={() => modalManager.toggle("equalizer")}
+              size="sm"
+              title="Equalizer"
+              variant={equalizerOpen || eqActive ? "default" : "ghost"}
+            >
+              <SlidersHorizontal className="size-3.5" />
+              EQ
+            </Button>
+            {equalizerOpen ? (
+              <div className="absolute bottom-10 right-0 z-20 grid w-[340px] grid-cols-[44px_minmax(0,1fr)_64px_28px] items-center gap-2 rounded-md border border-border bg-panel p-2 shadow-xl">
+                {eqBands.map((band) => (
+                  <Fragment key={band.key}>
+                    <span className="text-[11px] font-medium text-foreground">
+                      {band.label}
+                    </span>
+                    <input
+                      className="h-1.5 min-w-0 accent-primary"
+                      max={12}
+                      min={-12}
+                      onChange={(event) =>
+                        updateEqBand(band.key, Number(event.target.value))
+                      }
+                      onKeyDown={handleGainSpace}
+                      step={0.1}
+                      title={band.title}
+                      type="range"
+                      value={processing.eq[band.key]}
+                    />
+                    <input
+                      className={cn(
+                        compactInputClass,
+                        "w-16 px-1 text-right font-mono",
+                      )}
+                      max={12}
+                      min={-12}
+                      onChange={(event) =>
+                        updateEqBand(band.key, Number(event.target.value))
+                      }
+                      onKeyDown={handleGainSpace}
+                      step={0.1}
+                      title={`${band.title} dB`}
+                      type="number"
+                      value={Number(processing.eq[band.key].toFixed(1))}
+                    />
+                    {band.key === "lowDb" ? (
+                      <Button
+                        className="size-7 p-0"
+                        onClick={resetEq}
+                        size="icon"
+                        title="Reset equalizer"
+                        variant="ghost"
+                      >
+                        <RotateCcw className="size-3.5" />
+                      </Button>
+                    ) : (
+                      <span />
+                    )}
+                  </Fragment>
+                ))}
+              </div>
+            ) : null}
+          </div>
+          <div className="relative">
+            <Button
+              aria-expanded={pitchOpen}
+              aria-pressed={pitchActive}
+              className="h-8 gap-1 px-2 text-[11px]"
+              onClick={() => modalManager.toggle("pitch")}
+              size="sm"
+              title="Pitch"
+              variant={pitchOpen || pitchActive ? "default" : "ghost"}
+            >
+              <Music2 className="size-3.5" />
+              Pitch
+            </Button>
+            {pitchOpen ? (
+              <div className="absolute bottom-10 right-0 z-20 flex w-[300px] items-center gap-3 rounded-md border border-border bg-panel p-2 shadow-xl">
+                <span className="whitespace-nowrap text-[11px] font-medium text-foreground">
+                  Pitch
+                </span>
+                <input
+                  className="h-1.5 min-w-0 flex-1 accent-primary"
+                  max={12}
+                  min={-12}
+                  onChange={(event) => updatePitch(Number(event.target.value))}
+                  onKeyDown={handleGainSpace}
+                  step={0.1}
+                  title="Preview and export pitch"
+                  type="range"
+                  value={processing.pitchSemitones}
+                />
+                <input
+                  className={cn(compactInputClass, "w-16 px-1 text-right font-mono")}
+                  max={12}
+                  min={-12}
+                  onChange={(event) => updatePitch(Number(event.target.value))}
+                  onKeyDown={handleGainSpace}
+                  step={0.1}
+                  title="Pitch semitones"
+                  type="number"
+                  value={Number(processing.pitchSemitones.toFixed(1))}
+                />
+                <Button
+                  className="size-7 p-0"
+                  onClick={() => updatePitch(0)}
+                  size="icon"
+                  title="Reset pitch"
                   variant="ghost"
                 >
                   <RotateCcw className="size-3.5" />

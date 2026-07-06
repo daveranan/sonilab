@@ -12,6 +12,7 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { formatAudioTimeParts } from "@/lib/timeFormat";
+import { shouldStartAssetFileExportDrag } from "@/features/dragRouting";
 
 import type { BrowseRow as BrowseRowModel, LazyMetadataResponse } from "./browseTypes";
 import type { BrowseColumn } from "./columns";
@@ -265,7 +266,14 @@ function BrowseRowComponent({
       data-row-id={row.id}
       draggable
       onDragStart={(event) => {
-        if (row.kind === "asset" && onAssetFileDragRequest && event.shiftKey) {
+        if (
+          shouldStartAssetFileExportDrag({
+            rowKind: row.kind,
+            hasFileDragHandler: Boolean(onAssetFileDragRequest),
+          }) &&
+          row.kind === "asset" &&
+          onAssetFileDragRequest
+        ) {
           event.preventDefault();
           fileDragRef.current = {
             x: event.clientX,

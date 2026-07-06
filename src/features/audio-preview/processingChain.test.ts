@@ -4,6 +4,7 @@ import {
   analysisCacheKey,
   canonicalProcessingChain,
   createGainProcessingChain,
+  createProcessingChain,
   processingHash,
 } from "./processingChain";
 
@@ -21,6 +22,20 @@ describe("processing chain", () => {
   it("uses stable hashes for original and gain processing", () => {
     expect(processingHash(createGainProcessingChain(0))).toBe("processing:none");
     expect(processingHash(createGainProcessingChain(6))).toBe("processing:gain:6.00");
+  });
+
+  it("adds equalizer and pitch stages to the export contract", () => {
+    const chain = createProcessingChain({
+      gainDb: 3,
+      eq: { enabled: true, lowDb: 2.25, midDb: -1, highDb: 0 },
+      pitchSemitones: 2,
+    });
+
+    expect(chain.chainOrder).toEqual(["gain", "eq", "pitch"]);
+    expect(processingHash(chain)).toBe(
+      "processing:gain:3.00;eq:2.25:-1.00:0.00;pitch:2.00",
+    );
+    expect(canonicalProcessingChain(chain)).toContain('"pitch"');
   });
 
   it("keys full-file analysis by asset content, gain settings, and profile", () => {

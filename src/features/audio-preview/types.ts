@@ -18,10 +18,19 @@ export type PreviewStatus =
 export interface ProcessingSettings {
   mode: PreviewMode;
   gainDb: number;
+  eq: EqualizerSettings;
+  pitchSemitones: number;
   outputVolume: number;
   muted: boolean;
   playbackRate: number;
   channelMode: ChannelMonitorMode;
+}
+
+export interface EqualizerSettings {
+  enabled: boolean;
+  lowDb: number;
+  midDb: number;
+  highDb: number;
 }
 
 export interface PreviewRequest {

@@ -10,7 +10,7 @@ import {
 import { audioPreviewService } from "@/features/audio-preview/previewService";
 import {
   canonicalProcessingChain,
-  createGainProcessingChain,
+  createProcessingChain,
 } from "@/features/audio-preview/processingChain";
 import type { ProcessingSettings } from "@/features/audio-preview/types";
 import type { BrowseRow } from "@/features/browsing/browseTypes";
@@ -50,8 +50,13 @@ export function RightInspector({
   const [commentDraft, setCommentDraft] = useState("");
   const [saveStatus, setSaveStatus] = useState<string | null>(null);
   const chain = useMemo(
-    () => createGainProcessingChain(processing.gainDb),
-    [processing.gainDb],
+    () =>
+      createProcessingChain({
+        gainDb: processing.gainDb,
+        eq: processing.eq,
+        pitchSemitones: processing.pitchSemitones,
+      }),
+    [processing.eq, processing.gainDb, processing.pitchSemitones],
   );
   const categorySummary = useMemo(
     () => (activeAsset ? categorySummaryForTags(activeAsset.tags) : ""),
@@ -237,11 +242,13 @@ export function RightInspector({
         <ol className="space-y-1 text-muted-foreground">
           <li>1. Input trim for selected-region export</li>
           <li>2. Gain {processing.gainDb.toFixed(1)} dB</li>
-          <li>3. Export encoding</li>
+          <li>
+            3. EQ L {processing.eq.lowDb.toFixed(1)} / M{" "}
+            {processing.eq.midDb.toFixed(1)} / H {processing.eq.highDb.toFixed(1)} dB
+          </li>
+          <li>4. Pitch {processing.pitchSemitones.toFixed(1)} st</li>
+          <li>5. Export encoding</li>
         </ol>
-        <p className="mt-3 text-muted-foreground">
-          Normalize, limiter, EQ, and presets are deferred.
-        </p>
         <code className="mt-3 block truncate rounded-sm bg-background p-2 text-[10px] text-muted-foreground">
           {canonicalProcessingChain(chain)}
         </code>

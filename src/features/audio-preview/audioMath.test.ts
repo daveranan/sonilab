@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 
-import { clampGainDb, dbToGain, gainToDb, processedGain } from "./audioMath";
+import {
+  clampEqGainDb,
+  clampGainDb,
+  clampPitchSemitones,
+  dbToGain,
+  gainToDb,
+  pitchSemitonesToPlaybackRate,
+  processedGain,
+} from "./audioMath";
 import { regionPlaybackStartSeconds, validLoopRegion } from "./previewService";
 
 describe("audio math", () => {
@@ -17,6 +25,12 @@ describe("audio math", () => {
   it("clamps MVP gain range", () => {
     expect(clampGainDb(-30)).toBe(-24);
     expect(clampGainDb(40)).toBe(36);
+  });
+
+  it("converts and clamps pitch and eq controls", () => {
+    expect(clampPitchSemitones(18)).toBe(12);
+    expect(clampEqGainDb(-20)).toBe(-12);
+    expect(pitchSemitonesToPlaybackRate(12)).toBeCloseTo(2, 5);
   });
 
   it("validates selected-region loop points against buffer duration", () => {

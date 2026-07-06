@@ -8,10 +8,15 @@ import { check } from "@tauri-apps/plugin-updater";
 import type { LevelAnalysisPair } from "./levelAnalysis";
 import {
   canonicalProcessingChain,
-  createGainProcessingChain,
+  createProcessingChain,
   processingHash,
 } from "./processingChain";
-import type { PreviewFileResolution, WaveformPeakData, WaveformRegion } from "./types";
+import type {
+  EqualizerSettings,
+  PreviewFileResolution,
+  WaveformPeakData,
+  WaveformRegion,
+} from "./types";
 
 export type ExportJobSnapshot = {
   id: string;
@@ -142,6 +147,11 @@ type PluginStartDrag = (
   onEvent?: (result: PluginDragEvent) => void,
 ) => Promise<void>;
 type NativeFileDragFallback = (filePaths: string[]) => Promise<NativeFileDragResponse>;
+type ExportProcessingInput = {
+  gainDb: number;
+  eq?: EqualizerSettings;
+  pitchSemitones?: number;
+};
 
 const transparentDragIcon =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
@@ -181,6 +191,14 @@ function cachedPreparedDragFile(
     if (firstKey) preparedDragFileCache.delete(firstKey);
   }
   return promise;
+}
+
+function createExportProcessingChain(input: ExportProcessingInput) {
+  return createProcessingChain({
+    gainDb: input.gainDb,
+    eq: input.eq,
+    pitchSemitones: input.pitchSemitones,
+  });
 }
 
 export async function resolvePreviewFile(
@@ -496,9 +514,11 @@ export async function queueGainExportJob(input: {
   filenamePattern?: string;
   region: WaveformRegion | null;
   gainDb: number;
+  eq?: EqualizerSettings;
+  pitchSemitones?: number;
 }): Promise<ExportJobSnapshot | null> {
   if (!hasTauri()) return null;
-  const chain = createGainProcessingChain(input.gainDb);
+  const chain = createExportProcessingChain(input);
   return invoke<ExportJobSnapshot>("queue_export_job", {
     assetId: input.assetId,
     format: input.format.toLowerCase(),
@@ -524,6 +544,8 @@ export async function queueGainExportJobs(input: {
   scope: "full" | "region";
   region: WaveformRegion | null;
   gainDb: number;
+  eq?: EqualizerSettings;
+  pitchSemitones?: number;
   loopCrossfadeSeconds?: number | null;
   loopCrossfadeSlope?: number | null;
   regionFadeGapSeconds?: number | null;
@@ -537,7 +559,7 @@ export async function queueGainExportJobs(input: {
   overwriteMode: "skip" | "replace" | "rename";
 }): Promise<ExportJobSnapshot[] | null> {
   if (!hasTauri()) return null;
-  const chain = createGainProcessingChain(input.gainDb);
+  const chain = createExportProcessingChain(input);
   const formatSettings = {
     ...input.formatSettings,
     loopCrossfadeSeconds: input.loopCrossfadeSeconds ?? undefined,
@@ -593,6 +615,8 @@ export async function prepareRegionDragFile(input: {
   format: string;
   region: WaveformRegion;
   gainDb: number;
+  eq?: EqualizerSettings;
+  pitchSemitones?: number;
   loopCrossfadeSeconds?: number | null;
   loopCrossfadeSlope?: number | null;
   regionFadeGapSeconds?: number | null;
@@ -604,7 +628,7 @@ export async function prepareRegionDragFile(input: {
   tempFolder?: string;
 }): Promise<PreparedRegionDragFile | null> {
   if (!hasTauri()) return null;
-  const chain = createGainProcessingChain(input.gainDb);
+  const chain = createExportProcessingChain(input);
   const request = {
     assetId: input.assetId,
     displayName: input.displayName ?? null,
@@ -634,6 +658,8 @@ export async function prepareAssetDragFile(input: {
   format: string;
   region?: WaveformRegion | null;
   gainDb: number;
+  eq?: EqualizerSettings;
+  pitchSemitones?: number;
   regionFadeGapSeconds?: number | null;
   regionFadeInSeconds?: number | null;
   regionFadeInSlope?: number | null;
@@ -643,7 +669,7 @@ export async function prepareAssetDragFile(input: {
   tempFolder?: string;
 }): Promise<PreparedRegionDragFile | null> {
   if (!hasTauri()) return null;
-  const chain = createGainProcessingChain(input.gainDb);
+  const chain = createExportProcessingChain(input);
   const request = {
     assetId: input.assetId,
     displayName: input.displayName ?? null,
@@ -812,6 +838,8 @@ export async function startRegionFileDrag(input: {
   format: string;
   region: WaveformRegion;
   gainDb: number;
+  eq?: EqualizerSettings;
+  pitchSemitones?: number;
   loopCrossfadeSeconds?: number | null;
   loopCrossfadeSlope?: number | null;
   regionFadeGapSeconds?: number | null;
@@ -835,6 +863,8 @@ export async function startAssetFileDrag(input: {
   format: string;
   region?: WaveformRegion | null;
   gainDb: number;
+  eq?: EqualizerSettings;
+  pitchSemitones?: number;
   formatSettings?: ExportFormatSettings;
   tempFolder?: string;
 }): Promise<RegionFileDragResult | null> {
@@ -849,6 +879,8 @@ export async function startAssetFilesDrag(input: {
   assets: { assetId: string; displayName?: string }[];
   format: string;
   gainDb: number;
+  eq?: EqualizerSettings;
+  pitchSemitones?: number;
   formatSettings?: ExportFormatSettings;
   tempFolder?: string;
 }): Promise<MultiFileDragResult | null> {
@@ -861,6 +893,8 @@ export async function startAssetFilesDrag(input: {
       format: input.format,
       formatSettings: input.formatSettings,
       gainDb: input.gainDb,
+      eq: input.eq,
+      pitchSemitones: input.pitchSemitones,
       region: null,
       tempFolder: input.tempFolder,
     });

@@ -23,6 +23,7 @@ vi.mock("@tauri-apps/plugin-opener", () => ({
 }));
 
 import {
+  prepareAssetDragFile,
   prepareRegionDragFile,
   queueGainExportJobs,
   startPreparedFilesDrag,
@@ -152,6 +153,8 @@ describe("export file drag command helper", () => {
       format: "wav",
       formatSettings: { wavBitDepth: 16 },
       gainDb: 0,
+      eq: { enabled: true, lowDb: 2, midDb: -1, highDb: 0.5 },
+      pitchSemitones: 3,
       includeAttributionSidecar: false,
       loopCrossfadeSeconds: 0.05,
       loopCrossfadeSlope: 1.8,
@@ -183,6 +186,9 @@ describe("export file drag command helper", () => {
           regionFadeOutSeconds: 0.02,
           regionFadeOutSlope: 2,
         }),
+        processingHash: "processing:eq:2.00:-1.00:0.50;pitch:3.00",
+        processingJson:
+          '{"chainOrder":["gain","eq","pitch"],"eq":{"enabled":true,"lowDb":2,"midDb":-1,"highDb":0.5,"minDb":-12,"maxDb":12},"gain":{"enabled":true,"gainDb":0,"minDb":-24,"maxDb":36},"pitch":{"enabled":true,"semitones":3,"minSemitones":-12,"maxSemitones":12},"version":1}',
       }),
     );
   });
@@ -219,4 +225,42 @@ describe("export file drag command helper", () => {
       }),
     );
   });
+
+  it.each(["wav", "mp3", "ogg", "flac", "aac", "m4a", "mp4"])(
+    "prepares full-asset drag exports as %s",
+    async (format) => {
+      invokeMock.mockResolvedValueOnce({
+        assetId: "asset-1",
+        path: `C:\\temp\\drag.${format}`,
+        format,
+        regionStartSeconds: 0,
+        regionEndSeconds: 0,
+        processingHash: "processing:none",
+      });
+
+      await prepareAssetDragFile({
+        assetId: "asset-1",
+        displayName: "drag-source.wav",
+        format,
+        formatSettings:
+          format === "mp4"
+            ? { mp4Codec: "aac", mp4BitrateKbps: 192 }
+            : format === "m4a" || format === "aac"
+              ? { aacBitrateKbps: 192 }
+              : {},
+        gainDb: 0,
+        region: null,
+        tempFolder: "C:\\temp",
+      });
+
+      expect(invokeMock).toHaveBeenLastCalledWith(
+        "prepare_asset_drag_file",
+        expect.objectContaining({
+          assetId: "asset-1",
+          exportScope: "full",
+          format,
+        }),
+      );
+    },
+  );
 });

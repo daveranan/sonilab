@@ -170,9 +170,31 @@ struct GainStage {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct EqStage {
+    enabled: bool,
+    low_db: f64,
+    mid_db: f64,
+    high_db: f64,
+    min_db: f64,
+    max_db: f64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PitchStage {
+    enabled: bool,
+    semitones: f64,
+    min_semitones: f64,
+    max_semitones: f64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct GainProcessingChain {
     version: i64,
     gain: GainStage,
+    eq: Option<EqStage>,
+    pitch: Option<PitchStage>,
     chain_order: Vec<String>,
 }
 
@@ -632,7 +654,7 @@ fn process_export_job(
         )
         .map_err(|error| error.to_string())?;
 
-    if should_use_native_wav(&job, &asset, &settings) {
+    if should_use_native_wav(&job, &asset, &chain, &settings) {
         render_native_wav_export(&job, &asset, &chain, &output.path, token, deadline)?;
     } else {
         let ffmpeg = resolve_ffmpeg(resource_dir)?;
@@ -718,7 +740,7 @@ pub fn prepare_asset_drag_file(
     let asset = match export_asset(connection, &input.asset_id) {
         Ok(asset) => asset,
         Err(_) => {
-            return prepare_mock_drag_file(temp_root, resource_dir, input, chain.gain.gain_db);
+            return prepare_mock_drag_file(temp_root, resource_dir, input, &chain);
         }
     };
     let file_display_name = input
@@ -769,9 +791,9 @@ pub fn prepare_asset_drag_file(
 
     let token = CancellationToken::default();
     let deadline = JobDeadline::new(Duration::from_secs(5 * 60));
-    if should_use_native_wav(&job, &asset, &settings) {
+    if should_use_native_wav(&job, &asset, &chain, &settings) {
         render_native_wav_export(&job, &asset, &chain, &output_path, &token, &deadline)?;
-    } else if should_use_native_wav_intermediate(&job, &asset) {
+    } else if should_use_native_wav_intermediate(&job, &asset, &chain) {
         render_native_wav_intermediate_export(
             &job,
             &asset,
@@ -885,15 +907,27 @@ fn can_passthrough_original_drag(
     input.export_scope == "full"
         && input.loop_crossfade_seconds.unwrap_or(0.0) <= 0.0
         && Path::new(&asset.path_or_url).is_file()
-        && is_noop_gain_chain(chain)
+        && is_noop_processing_chain(chain)
         && has_no_explicit_format_settings(&input.format_settings_json)
         && source_format_matches_export(input, asset)
 }
 
-fn is_noop_gain_chain(chain: &GainProcessingChain) -> bool {
+fn is_noop_processing_chain(chain: &GainProcessingChain) -> bool {
     chain.version == 1
-        && chain.chain_order.iter().all(|stage| stage == "gain")
+        && chain
+            .chain_order
+            .iter()
+            .all(|stage| matches!(stage.as_str(), "gain" | "eq" | "pitch"))
         && (!chain.gain.enabled || chain.gain.gain_db.abs() < 0.000_001)
+        && chain.eq.as_ref().map_or(true, |eq| {
+            !eq.enabled
+                || (eq.low_db.abs() < 0.000_001
+                    && eq.mid_db.abs() < 0.000_001
+                    && eq.high_db.abs() < 0.000_001)
+        })
+        && chain.pitch.as_ref().map_or(true, |pitch| {
+            !pitch.enabled || pitch.semitones.abs() < 0.000_001
+        })
 }
 
 fn has_no_explicit_format_settings(settings_json: &str) -> bool {
@@ -930,7 +964,6 @@ fn source_format_matches_export(
 fn normalized_export_format(format: &str) -> String {
     match format.to_ascii_lowercase().as_str() {
         "wave" => "wav".to_string(),
-        "mp4" => "m4a".to_string(),
         value => value.to_string(),
     }
 }
@@ -939,7 +972,7 @@ fn prepare_mock_drag_file(
     temp_root: &Path,
     resource_dir: Option<&Path>,
     input: TempAssetDragExportInput,
-    gain_db: f64,
+    chain: &GainProcessingChain,
 ) -> Result<PreparedRegionDragFile, String> {
     let export_dir = temp_root
         .join("sonilabs-export-drag")
@@ -957,7 +990,14 @@ fn prepare_mock_drag_file(
         1.0
     };
     let mock_wav_path = export_dir.join(format!("{}.wav", file_stem));
-    let rendered = render_mock_wav_region_16_bit(duration_seconds, gain_db);
+    let rendered = render_mock_wav_region_16_bit(
+        duration_seconds,
+        if input.format == "wav" {
+            chain.gain.gain_db
+        } else {
+            0.0
+        },
+    );
     fs::write(&mock_wav_path, rendered).map_err(|error| error.to_string())?;
     let output_path = if input.format == "wav" {
         mock_wav_path
@@ -998,9 +1038,7 @@ fn prepare_mock_drag_file(
             include_attribution_sidecar: false,
             overwrite_mode: "replace".to_string(),
         };
-        let chain: GainProcessingChain = serde_json::from_str(&input.processing_json)
-            .map_err(|_| "invalid processing_json".to_string())?;
-        let args = build_ffmpeg_args(&ffmpeg, &job, &asset, &chain, &settings, &output_path)?;
+        let args = build_ffmpeg_args(&ffmpeg, &job, &asset, chain, &settings, &output_path)?;
         let token = CancellationToken::default();
         let deadline = JobDeadline::new(Duration::from_secs(5 * 60));
         let output = run_ffmpeg_with_deadline(&ffmpeg, args, &token, &deadline)?;
@@ -1042,20 +1080,45 @@ fn validate_gain_processing_chain(
 ) -> Result<(), String> {
     let chain: GainProcessingChain =
         serde_json::from_str(processing_json).map_err(|_| "invalid processing_json".to_string())?;
-    if chain.version != 1 || chain.chain_order != ["gain"] {
-        return Err("export processing is gain-only in this phase".to_string());
+    if chain.version != 1 {
+        return Err("unsupported processing chain version".to_string());
+    }
+    if !chain.chain_order.iter().any(|stage| stage == "gain") {
+        return Err("processing chain requires gain stage".to_string());
+    }
+    let mut seen = std::collections::HashSet::new();
+    for stage in &chain.chain_order {
+        if !matches!(stage.as_str(), "gain" | "eq" | "pitch") {
+            return Err("unsupported processing stage".to_string());
+        }
+        if !seen.insert(stage.as_str()) {
+            return Err("duplicate processing stage".to_string());
+        }
     }
     if !chain.gain.enabled || chain.gain.min_db != -24.0 || chain.gain.max_db != 36.0 {
         return Err("invalid gain stage".to_string());
     }
-    let gain_db = chain.gain.gain_db.clamp(-24.0, 36.0);
-    let expected_hash = if gain_db.abs() < 0.005 {
-        "processing:none".to_string()
-    } else {
-        format!("processing:gain:{gain_db:.2}")
-    };
+    if chain.chain_order.iter().any(|stage| stage == "eq") {
+        let eq = chain
+            .eq
+            .as_ref()
+            .ok_or_else(|| "missing eq stage".to_string())?;
+        if !eq.enabled || eq.min_db != -12.0 || eq.max_db != 12.0 {
+            return Err("invalid eq stage".to_string());
+        }
+    }
+    if chain.chain_order.iter().any(|stage| stage == "pitch") {
+        let pitch = chain
+            .pitch
+            .as_ref()
+            .ok_or_else(|| "missing pitch stage".to_string())?;
+        if !pitch.enabled || pitch.min_semitones != -12.0 || pitch.max_semitones != 12.0 {
+            return Err("invalid pitch stage".to_string());
+        }
+    }
+    let expected_hash = processing_hash_for_chain(&chain);
     if processing_hash != expected_hash {
-        return Err("processing_hash does not match gain settings".to_string());
+        return Err("processing_hash does not match processing settings".to_string());
     }
     Ok(())
 }
@@ -1370,6 +1433,7 @@ fn output_extension(format: &str) -> &'static str {
 fn should_use_native_wav(
     job: &ExportJobRecord,
     asset: &ExportAssetRecord,
+    chain: &GainProcessingChain,
     settings: &FormatSettings,
 ) -> bool {
     let source_format = asset
@@ -1381,9 +1445,14 @@ fn should_use_native_wav(
         && settings.wav_bit_depth.unwrap_or(16) == 16
         && settings.wav_sample_rate.is_none()
         && matches!(source_format.as_str(), "wav" | "wave")
+        && chain_has_native_only_processing(chain)
 }
 
-fn should_use_native_wav_intermediate(job: &ExportJobRecord, asset: &ExportAssetRecord) -> bool {
+fn should_use_native_wav_intermediate(
+    job: &ExportJobRecord,
+    asset: &ExportAssetRecord,
+    chain: &GainProcessingChain,
+) -> bool {
     let source_format = asset
         .format
         .as_deref()
@@ -1392,8 +1461,20 @@ fn should_use_native_wav_intermediate(job: &ExportJobRecord, asset: &ExportAsset
     job.format != "wav"
         && job.export_scope == "region"
         && matches!(source_format.as_str(), "wav" | "wave")
+        && chain_has_native_only_processing(chain)
         && (job.loop_crossfade_seconds.unwrap_or(0.0) > 0.0
             || normalized_region_fade_seconds(job) != (0.0, 0.0))
+}
+
+fn chain_has_native_only_processing(chain: &GainProcessingChain) -> bool {
+    chain.eq.as_ref().map_or(true, |eq| {
+        !eq.enabled
+            || (eq.low_db.abs() < 0.000_001
+                && eq.mid_db.abs() < 0.000_001
+                && eq.high_db.abs() < 0.000_001)
+    }) && chain.pitch.as_ref().map_or(true, |pitch| {
+        !pitch.enabled || pitch.semitones.abs() < 0.000_001
+    })
 }
 
 fn render_native_wav_intermediate_export(
@@ -1474,6 +1555,8 @@ fn noop_gain_processing_chain() -> GainProcessingChain {
             min_db: -24.0,
             max_db: 36.0,
         },
+        eq: None,
+        pitch: None,
         chain_order: vec!["gain".to_string()],
     }
 }
@@ -1551,7 +1634,7 @@ fn render_native_wav_export(
         )?;
         return fs::write(output_path, rendered).map_err(|error| error.to_string());
     }
-    if is_noop_gain_chain(chain)
+    if is_noop_processing_chain(chain)
         && job.export_scope == "region"
         && normalized_region_fade_seconds(job) == (0.0, 0.0)
     {
@@ -1775,11 +1858,7 @@ fn build_ffmpeg_args(
         } else {
             ("tri", "tri")
         };
-        let volume = if chain.gain.gain_db.abs() >= 0.005 {
-            format!(",volume={:.2}dB", chain.gain.gain_db)
-        } else {
-            String::new()
-        };
+        let processing_filters = ffmpeg_processing_filter_suffix(chain);
         args.push("-filter_complex".to_string());
         args.push(format!(
             "[0:a]atrim=start={start:.6}:end={end:.6},asetpts=PTS-STARTPTS,asplit=3[base][headsrc][tailsrc];\
@@ -1787,7 +1866,7 @@ fn build_ffmpeg_args(
              [tailsrc]atrim=start={body_end:.6}:end={duration:.6},asetpts=PTS-STARTPTS[tail];\
              [tail][head]acrossfade=d={crossfade_seconds:.6}:c1={tail_curve}:c2={head_curve}[xf];\
              [base]atrim=start={crossfade_seconds:.6}:end={body_end:.6},asetpts=PTS-STARTPTS[body];\
-             [body][xf]concat=n=2:v=0:a=1{volume}[out]"
+             [body][xf]concat=n=2:v=0:a=1{processing_filters}[out]"
         ));
         args.push("-map".to_string());
         args.push("[out]".to_string());
@@ -1822,8 +1901,12 @@ fn build_ffmpeg_args(
         ));
     }
     if chain.gain.gain_db.abs() >= 0.005 {
-        audio_filters.push(format!("volume={:.2}dB", chain.gain.gain_db));
+        audio_filters.push(format!(
+            "volume={:.2}dB",
+            chain.gain.gain_db.clamp(-24.0, 36.0)
+        ));
     }
+    audio_filters.extend(ffmpeg_processing_filters_excluding_gain(chain));
     if !audio_filters.is_empty() {
         if let Some((start, end, _duration)) = region_timing {
             audio_filters.insert(
@@ -1842,6 +1925,75 @@ fn build_ffmpeg_args(
     args.extend(codec_args(&job.format, settings));
     args.push(output_path.to_string_lossy().to_string());
     Ok(args)
+}
+
+fn ffmpeg_processing_filter_suffix(chain: &GainProcessingChain) -> String {
+    let filters = ffmpeg_processing_filters(chain);
+    if filters.is_empty() {
+        String::new()
+    } else {
+        format!(",{}", filters.join(","))
+    }
+}
+
+fn ffmpeg_processing_filters(chain: &GainProcessingChain) -> Vec<String> {
+    let mut filters = Vec::new();
+    for stage in &chain.chain_order {
+        match stage.as_str() {
+            "gain" => {
+                let gain_db = chain.gain.gain_db.clamp(-24.0, 36.0);
+                if chain.gain.enabled && gain_db.abs() >= 0.005 {
+                    filters.push(format!("volume={gain_db:.2}dB"));
+                }
+            }
+            "eq" => append_eq_filters(chain.eq.as_ref(), &mut filters),
+            "pitch" => append_pitch_filters(chain.pitch.as_ref(), &mut filters),
+            _ => {}
+        }
+    }
+    filters
+}
+
+fn ffmpeg_processing_filters_excluding_gain(chain: &GainProcessingChain) -> Vec<String> {
+    let mut filters = Vec::new();
+    for stage in &chain.chain_order {
+        match stage.as_str() {
+            "eq" => append_eq_filters(chain.eq.as_ref(), &mut filters),
+            "pitch" => append_pitch_filters(chain.pitch.as_ref(), &mut filters),
+            _ => {}
+        }
+    }
+    filters
+}
+
+fn append_eq_filters(eq: Option<&EqStage>, filters: &mut Vec<String>) {
+    let Some(eq) = eq.filter(|eq| eq.enabled) else {
+        return;
+    };
+    let low = eq.low_db.clamp(-12.0, 12.0);
+    let mid = eq.mid_db.clamp(-12.0, 12.0);
+    let high = eq.high_db.clamp(-12.0, 12.0);
+    if low.abs() >= 0.005 {
+        filters.push(format!("bass=f=120:g={low:.2}"));
+    }
+    if mid.abs() >= 0.005 {
+        filters.push(format!("equalizer=f=1000:t=q:w=1:g={mid:.2}"));
+    }
+    if high.abs() >= 0.005 {
+        filters.push(format!("treble=f=8000:g={high:.2}"));
+    }
+}
+
+fn append_pitch_filters(pitch: Option<&PitchStage>, filters: &mut Vec<String>) {
+    let Some(pitch) = pitch.filter(|pitch| pitch.enabled) else {
+        return;
+    };
+    let semitones = pitch.semitones.clamp(-12.0, 12.0);
+    if semitones.abs() < 0.005 {
+        return;
+    }
+    let factor = 2_f64.powf(semitones / 12.0);
+    filters.push(format!("rubberband=tempo={factor:.6}:pitch={factor:.6}"));
 }
 
 fn normalized_loop_crossfade_seconds(job: &ExportJobRecord) -> Option<f64> {
@@ -2075,12 +2227,34 @@ fn dbfs_value(value: f64) -> f64 {
 fn processing_hash_from_processing_json(processing_json: &str) -> Result<String, String> {
     let chain: GainProcessingChain =
         serde_json::from_str(processing_json).map_err(|_| "invalid processing_json".to_string())?;
+    Ok(processing_hash_for_chain(&chain))
+}
+
+fn processing_hash_for_chain(chain: &GainProcessingChain) -> String {
+    let mut parts = Vec::new();
     let gain_db = chain.gain.gain_db.clamp(-24.0, 36.0);
-    Ok(if gain_db.abs() < 0.005 {
+    if gain_db.abs() >= 0.005 {
+        parts.push(format!("gain:{gain_db:.2}"));
+    }
+    if let Some(eq) = chain.eq.as_ref().filter(|eq| eq.enabled) {
+        let low = eq.low_db.clamp(-12.0, 12.0);
+        let mid = eq.mid_db.clamp(-12.0, 12.0);
+        let high = eq.high_db.clamp(-12.0, 12.0);
+        if low.abs() >= 0.005 || mid.abs() >= 0.005 || high.abs() >= 0.005 {
+            parts.push(format!("eq:{low:.2}:{mid:.2}:{high:.2}"));
+        }
+    }
+    if let Some(pitch) = chain.pitch.as_ref().filter(|pitch| pitch.enabled) {
+        let semitones = pitch.semitones.clamp(-12.0, 12.0);
+        if semitones.abs() >= 0.005 {
+            parts.push(format!("pitch:{semitones:.2}"));
+        }
+    }
+    if parts.is_empty() {
         "processing:none".to_string()
     } else {
-        format!("processing:gain:{gain_db:.2}")
-    })
+        format!("processing:{}", parts.join(";"))
+    }
 }
 
 fn processing_hash_from_settings(settings_json: &str) -> String {
@@ -2937,6 +3111,18 @@ mod tests {
         )
     }
 
+    fn test_effect_processing_json(
+        gain_db: f64,
+        low_db: f64,
+        mid_db: f64,
+        high_db: f64,
+        pitch: f64,
+    ) -> String {
+        format!(
+            r#"{{"chainOrder":["gain","eq","pitch"],"eq":{{"enabled":true,"lowDb":{low_db},"midDb":{mid_db},"highDb":{high_db},"minDb":-12,"maxDb":12}},"gain":{{"enabled":true,"gainDb":{gain_db},"minDb":-24,"maxDb":36}},"pitch":{{"enabled":true,"semitones":{pitch},"minSemitones":-12,"maxSemitones":12}},"version":1}}"#
+        )
+    }
+
     fn test_export_input(asset_id: &str) -> ExportJobInput {
         ExportJobInput {
             asset_id: asset_id.to_string(),
@@ -3090,13 +3276,27 @@ mod tests {
     }
 
     #[test]
-    fn rejects_non_gain_processing_contracts() {
+    fn queues_export_with_eq_and_pitch_processing_snapshot() {
         let connection = test_connection();
         let mut input = test_export_input("asset_test");
-        input.processing_json = r#"{"chainOrder":["gain","eq"],"gain":{"enabled":true,"gainDb":0,"minDb":-24,"maxDb":36},"version":1}"#.to_string();
-        let error = queue_export_job(&connection, input).expect_err("reject eq chain");
+        input.processing_json = test_effect_processing_json(0.0, 2.0, -1.0, 0.5, 3.0);
+        input.processing_hash = "processing:eq:2.00:-1.00:0.50;pitch:3.00".to_string();
+        let job = queue_export_job(&connection, input).expect("queue export");
 
-        assert!(error.contains("gain-only"));
+        assert_eq!(
+            job.processing_hash,
+            "processing:eq:2.00:-1.00:0.50;pitch:3.00"
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_processing_contracts() {
+        let connection = test_connection();
+        let mut input = test_export_input("asset_test");
+        input.processing_json = r#"{"chainOrder":["gain","limiter"],"gain":{"enabled":true,"gainDb":0,"minDb":-24,"maxDb":36},"version":1}"#.to_string();
+        let error = queue_export_job(&connection, input).expect_err("reject unknown chain");
+
+        assert!(error.contains("unsupported processing stage"));
     }
 
     #[test]
@@ -3188,6 +3388,53 @@ mod tests {
             && pair[1].contains("atrim=start=0.250000:end=0.750000")
             && pair[1].contains("asetpts=PTS-STARTPTS")
             && pair[1].contains("volume=3.00dB")));
+        let _ = fs::remove_file(source_path);
+    }
+
+    #[test]
+    fn ffmpeg_args_include_eq_and_pitch_filters() {
+        let connection = test_connection();
+        let source_path = std::env::temp_dir().join(format!(
+            "sonilabs_ffmpeg_effect_args_{}.wav",
+            std::process::id()
+        ));
+        fs::write(&source_path, b"not-used-by-command-builder").expect("write temp source");
+        connection
+            .execute(
+                "UPDATE assets SET path_or_url = ?1 WHERE id = 'asset_test'",
+                params![source_path.to_string_lossy()],
+            )
+            .expect("update source path");
+        let mut input = test_export_input("asset_test");
+        input.format = "ogg".to_string();
+        input.processing_json = test_effect_processing_json(3.0, 2.0, -1.0, 0.5, 3.0);
+        input.processing_hash = "processing:gain:3.00;eq:2.00:-1.00:0.50;pitch:3.00".to_string();
+        let snapshot = queue_export_job(&connection, input).expect("queue job");
+        let job = export_job_record(&connection, &snapshot.id).expect("read job");
+        let asset = export_asset(&connection, "asset_test").expect("asset");
+        let chain: GainProcessingChain = serde_json::from_str(&job.processing_json).expect("chain");
+        let settings =
+            parse_format_settings(&job.format, &job.format_settings_json).expect("settings");
+        let planned = plan_output_path(&job, &asset, &chain, &settings).expect("plan");
+        let args = build_ffmpeg_args(
+            Path::new("ffmpeg"),
+            &job,
+            &asset,
+            &chain,
+            &settings,
+            &planned.path,
+        )
+        .expect("ffmpeg args");
+        let filters = args
+            .windows(2)
+            .find_map(|pair| (pair[0] == "-af").then_some(pair[1].as_str()))
+            .expect("audio filters");
+
+        assert!(filters.contains("volume=3.00dB"));
+        assert!(filters.contains("bass=f=120:g=2.00"));
+        assert!(filters.contains("equalizer=f=1000:t=q:w=1:g=-1.00"));
+        assert!(filters.contains("treble=f=8000:g=0.50"));
+        assert!(filters.contains("rubberband=tempo="));
         let _ = fs::remove_file(source_path);
     }
 
@@ -4042,6 +4289,41 @@ mod tests {
         .expect("prepare passthrough drag file");
 
         assert_eq!(prepared.path, fixture_path.to_string_lossy());
+    }
+
+    #[test]
+    fn passthrough_format_matching_does_not_conflate_mp4_and_m4a() {
+        let input = TempAssetDragExportInput {
+            asset_id: "asset_test".to_string(),
+            display_name: None,
+            format: "m4a".to_string(),
+            export_scope: "full".to_string(),
+            region_start_seconds: None,
+            region_end_seconds: None,
+            loop_crossfade_seconds: None,
+            loop_crossfade_slope: None,
+            region_fade_gap_seconds: None,
+            region_fade_in_seconds: None,
+            region_fade_in_slope: None,
+            region_fade_out_seconds: None,
+            region_fade_out_slope: None,
+            format_settings_json: "{}".to_string(),
+            processing_json: test_processing_json(0.0),
+            processing_hash: "processing:none".to_string(),
+        };
+        let asset = ExportAssetRecord {
+            source_root_uri: "F:/Library".to_string(),
+            path_or_url: "F:/Library/clip.mp4".to_string(),
+            name: "clip.mp4".to_string(),
+            format: Some("mp4".to_string()),
+            relative_path: None,
+            license: None,
+            attribution: None,
+            originator: None,
+            source_url: None,
+        };
+
+        assert!(!source_format_matches_export(&input, &asset));
     }
 
     #[test]

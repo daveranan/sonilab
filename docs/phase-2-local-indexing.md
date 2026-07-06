@@ -38,11 +38,24 @@ Phase 2 must detect these formats by extension and verify with file signatures o
 - WAV
 - MP3
 - OGG
+- OGV
+- OPUS
 - FLAC
 - AAC
 - M4A
+- MP4
 - AIFF
 - AIF
+- CAF
+- WMA
+- WV
+- APE
+- AMR
+- AC3
+- MKA
+- WEBM
+- MKV
+- MOV
 
 Extension detection is only a fast prefilter. Final format should come from a probe result whenever possible, because sample libraries often contain mislabeled files.
 

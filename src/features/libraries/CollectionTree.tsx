@@ -8,6 +8,10 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
+import {
+  sonilabsAssetDragType,
+  sonilabsFolderDragType,
+} from "@/features/dragRouting";
 import { cn } from "@/lib/utils";
 
 import type { CollectionNode } from "./libraryTypes";
@@ -105,20 +109,16 @@ function CollectionTreeNode({
             }}
             onDragOver={(event) => {
               if (
-                event.dataTransfer.types.includes("application/x-sonilabs-assets") ||
-                event.dataTransfer.types.includes("application/x-sonilabs-folder")
+                event.dataTransfer.types.includes(sonilabsAssetDragType) ||
+                event.dataTransfer.types.includes(sonilabsFolderDragType)
               ) {
                 event.preventDefault();
                 event.dataTransfer.dropEffect = "copy";
               }
             }}
             onDrop={(event) => {
-              const assetPayload = event.dataTransfer.getData(
-                "application/x-sonilabs-assets",
-              );
-              const folderPayload = event.dataTransfer.getData(
-                "application/x-sonilabs-folder",
-              );
+              const assetPayload = event.dataTransfer.getData(sonilabsAssetDragType);
+              const folderPayload = event.dataTransfer.getData(sonilabsFolderDragType);
               if (assetPayload) {
                 event.preventDefault();
                 try {

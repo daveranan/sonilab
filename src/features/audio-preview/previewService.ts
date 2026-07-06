@@ -1,7 +1,14 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
 
 import { createLogger } from "@/lib/logger";
-import { clampGainDb, clampPlaybackRate, processedGain } from "./audioMath";
+import {
+  clampEqGainDb,
+  clampGainDb,
+  clampPitchSemitones,
+  clampPlaybackRate,
+  pitchSemitonesToPlaybackRate,
+  processedGain,
+} from "./audioMath";
 import { readPreviewFileBytes, resolvePreviewFile } from "./commands";
 import { DecodedBufferCache } from "./decodedBufferCache";
 import type {
@@ -46,6 +53,13 @@ const minLoopRegionDurationSeconds = 0.001;
 const defaultProcessing: ProcessingSettings = {
   mode: "original",
   gainDb: 0,
+  eq: {
+    enabled: false,
+    lowDb: 0,
+    midDb: 0,
+    highDb: 0,
+  },
+  pitchSemitones: 0,
   outputVolume: 0.8,
   muted: false,
   playbackRate: 1,
@@ -88,6 +102,9 @@ export function regionPlaybackStartSeconds(
 export class AudioPreviewService {
   private audioContext: AudioContext | null = null;
   private playbackGain: GainNode | null = null;
+  private eqLow: BiquadFilterNode | null = null;
+  private eqMid: BiquadFilterNode | null = null;
+  private eqHigh: BiquadFilterNode | null = null;
   private masterGain: GainNode | null = null;
   private analyser: AnalyserNode | null = null;
   private source: AudioBufferSourceNode | null = null;
@@ -478,6 +495,11 @@ export class AudioPreviewService {
 
   setProcessing(processing: Partial<ProcessingSettings>): void {
     const previousChannelMode = this.processing.channelMode;
+    const previousPlaybackRate = this.effectivePlaybackRate();
+    const playheadBeforeRateChange =
+      this.state.status === "playing" && this.source
+        ? this.currentPlayheadSeconds()
+        : null;
     const nextChannelMode =
       processing.channelMode === undefined
         ? this.processing.channelMode
@@ -485,6 +507,19 @@ export class AudioPreviewService {
     this.processing = {
       ...this.processing,
       ...processing,
+      eq:
+        processing.eq === undefined
+          ? this.processing.eq
+          : {
+              enabled: processing.eq.enabled,
+              lowDb: clampEqGainDb(processing.eq.lowDb),
+              midDb: clampEqGainDb(processing.eq.midDb),
+              highDb: clampEqGainDb(processing.eq.highDb),
+            },
+      pitchSemitones:
+        processing.pitchSemitones === undefined
+          ? this.processing.pitchSemitones
+          : clampPitchSemitones(processing.pitchSemitones),
       channelMode: nextChannelMode,
       playbackRate:
         processing.playbackRate === undefined
@@ -496,6 +531,16 @@ export class AudioPreviewService {
           : clampGainDb(processing.gainDb),
     };
     this.applyGain();
+    this.applyEq();
+    if (
+      playheadBeforeRateChange !== null &&
+      this.audioContext &&
+      Math.abs(this.effectivePlaybackRate() - previousPlaybackRate) >= 0.000_001
+    ) {
+      this.sourceOffsetSeconds = playheadBeforeRateChange;
+      this.startedAtContextTime = this.audioContext.currentTime;
+    }
+    this.applyPlaybackRate();
     this.emitProcessing();
     if (
       processing.channelMode !== undefined &&
@@ -583,7 +628,7 @@ export class AudioPreviewService {
       return this.state.playheadSeconds;
     const elapsed =
       (this.audioContext.currentTime - this.startedAtContextTime) *
-      this.processing.playbackRate;
+      this.effectivePlaybackRate();
     const next = this.sourceOffsetSeconds + elapsed;
     if (this.tempLoopPreview && this.activeBuffer) {
       const loopSeconds =
@@ -712,14 +757,35 @@ export class AudioPreviewService {
         this.resetMediaSinkTracking();
       }
     }
-    if (!this.playbackGain || !this.masterGain || !this.analyser) {
+    if (
+      !this.playbackGain ||
+      !this.eqLow ||
+      !this.eqMid ||
+      !this.eqHigh ||
+      !this.masterGain ||
+      !this.analyser
+    ) {
       this.playbackGain = this.audioContext.createGain();
+      this.eqLow = this.audioContext.createBiquadFilter();
+      this.eqMid = this.audioContext.createBiquadFilter();
+      this.eqHigh = this.audioContext.createBiquadFilter();
       this.masterGain = this.audioContext.createGain();
       this.analyser = this.audioContext.createAnalyser();
-      this.playbackGain.connect(this.masterGain);
+      this.eqLow.type = "lowshelf";
+      this.eqLow.frequency.value = 120;
+      this.eqMid.type = "peaking";
+      this.eqMid.frequency.value = 1000;
+      this.eqMid.Q.value = 1;
+      this.eqHigh.type = "highshelf";
+      this.eqHigh.frequency.value = 8000;
+      this.playbackGain.connect(this.eqLow);
+      this.eqLow.connect(this.eqMid);
+      this.eqMid.connect(this.eqHigh);
+      this.eqHigh.connect(this.masterGain);
       this.masterGain.connect(this.analyser);
       this.analyser.connect(this.audioContext.destination);
       this.applyGain();
+      this.applyEq();
     }
     if (this.audioContext.state === "suspended") await this.audioContext.resume();
     return this.audioContext;
@@ -800,7 +866,7 @@ export class AudioPreviewService {
       audio.currentTime || this.state.playheadSeconds,
     );
     audio.volume = Math.max(0, Math.min(1, fadeGain));
-    audio.playbackRate = this.processing.playbackRate;
+    audio.playbackRate = this.effectivePlaybackRate();
     this.applyMediaSink(audio);
   }
 
@@ -922,7 +988,7 @@ export class AudioPreviewService {
     this.stopSource();
     const source = this.audioContext.createBufferSource();
     source.buffer = buffer;
-    source.playbackRate.value = this.processing.playbackRate;
+    source.playbackRate.value = this.effectivePlaybackRate();
     if (this.tempLoopPreview) {
       source.loop = true;
       source.loopStart = 0;
@@ -1099,6 +1165,41 @@ export class AudioPreviewService {
     this.masterGain.gain.setTargetAtTime(masterGain, now, 0.01);
   }
 
+  private applyEq(): void {
+    if (!this.audioContext || !this.eqLow || !this.eqMid || !this.eqHigh) return;
+    const now = this.audioContext.currentTime;
+    const eq =
+      this.processing.mode === "processed" && this.processing.eq.enabled
+        ? this.processing.eq
+        : defaultProcessing.eq;
+    this.eqLow.gain.cancelScheduledValues(now);
+    this.eqMid.gain.cancelScheduledValues(now);
+    this.eqHigh.gain.cancelScheduledValues(now);
+    this.eqLow.gain.setTargetAtTime(eq.lowDb, now, 0.01);
+    this.eqMid.gain.setTargetAtTime(eq.midDb, now, 0.01);
+    this.eqHigh.gain.setTargetAtTime(eq.highDb, now, 0.01);
+  }
+
+  private applyPlaybackRate(): void {
+    const rate = this.effectivePlaybackRate();
+    if (this.source && this.audioContext) {
+      this.source.playbackRate.setTargetAtTime(
+        rate,
+        this.audioContext.currentTime,
+        0.01,
+      );
+    }
+    if (this.mediaElement) this.mediaElement.playbackRate = rate;
+  }
+
+  private effectivePlaybackRate(): number {
+    const pitchRate =
+      this.processing.mode === "processed"
+        ? pitchSemitonesToPlaybackRate(this.processing.pitchSemitones)
+        : 1;
+    return clampPlaybackRate(this.processing.playbackRate * pitchRate);
+  }
+
   private mediaRegionFadeGain(seconds: number): number {
     if (this.tempLoopPreview) return 1;
     const region = validLoopRegion(this.loopRegion, this.state.durationSeconds);
@@ -1203,10 +1304,7 @@ export class AudioPreviewService {
         );
         gain.setValueAtTime(0, now + Math.max(0, region.endSeconds - offsetSeconds));
       } else {
-        gain.setValueAtTime(
-          0,
-          now + Math.max(0, lastAudibleSeconds - offsetSeconds),
-        );
+        gain.setValueAtTime(0, now + Math.max(0, lastAudibleSeconds - offsetSeconds));
       }
     }
   }

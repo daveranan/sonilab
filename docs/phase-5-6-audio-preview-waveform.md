@@ -235,7 +235,7 @@ Backend job behavior:
 - Support cancellation when selected asset changes.
 - Reuse decode/probe infrastructure from indexing where possible.
 - Mark corrupt or unsupported files without retry loops.
-- Current backend implementation generates peaks from WAV assets only; other indexed formats require a decoder/proxy path before this item is complete for all supported input formats.
+- Backend waveform generation uses native WAV parsing plus decoder sidecars for MP3, OGG/OGV/OPUS, FLAC, AAC/M4A/MP4, AIFF, and other FFmpeg-backed media containers.
 
 Generation order:
 
