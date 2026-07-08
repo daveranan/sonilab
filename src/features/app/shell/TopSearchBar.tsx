@@ -5,6 +5,7 @@ import type React from "react";
 import type { SearchFilterChip, SearchWarning } from "@/features/browsing/browseTypes";
 import {
   applySearchSuggestion,
+  commitSearchTokenAtCaret,
   resolveSearchSuggestions,
 } from "@/features/browsing/searchSuggestions";
 
@@ -103,6 +104,17 @@ export function TopSearchBar({
             if (event.key === "Escape") {
               setIsFocused(false);
               return;
+            }
+            if (event.key === ",") {
+              const committed = commitSearchTokenAtCaret(
+                value,
+                event.currentTarget.selectionStart ?? caretIndex,
+              );
+              if (committed) {
+                event.preventDefault();
+                setInputValue(committed.value, committed.caretIndex);
+                return;
+              }
             }
             if (event.key === "Enter") onSubmit();
           }}

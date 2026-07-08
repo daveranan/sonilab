@@ -178,6 +178,8 @@ const SPARSE_FRAMES_PER_WINDOW: usize = 512;
 const BINARY_WAVEFORM_MAGIC: &[u8; 8] = b"SLWAVE1\0";
 const WAVEFORM_CACHE_VERSION: i64 = 2;
 const WAVEFORM_DEADLINE_SECONDS: u64 = 20 * 60;
+const PREVIEW_CACHE_VERSION: i64 = 1;
+const PREVIEW_DECODE_DEADLINE_SECONDS: u64 = 20 * 60;
 
 struct AudioJobRegistration<'a> {
     registry: &'a CancellationRegistry,
@@ -236,6 +238,36 @@ pub fn resolve_preview_file(
         channel_count: asset.channels,
         processed_available: false,
     })
+}
+
+pub fn resolve_preview_file_with_sidecar(
+    connection: &Connection,
+    cache_root: &Path,
+    resource_dir: Option<&Path>,
+    asset_id: &str,
+    requested_mode: &str,
+) -> Result<PreviewFileResolution, String> {
+    let mut resolution = resolve_preview_file(connection, asset_id, requested_mode)?;
+    if resolution.media_type != "local-file" || !Path::new(&resolution.path).is_file() {
+        return Ok(resolution);
+    }
+
+    let asset = audio_asset(connection, asset_id)?;
+    let source_path = Path::new(&resolution.path);
+    if browser_can_decode_preview(&asset, source_path) {
+        return Ok(resolution);
+    }
+
+    let preview_path = cached_or_generate_browser_preview(
+        connection,
+        cache_root,
+        resource_dir,
+        &asset,
+        source_path,
+    )?;
+    resolution.path = preview_path.to_string_lossy().to_string();
+    resolution.url = None;
+    Ok(resolution)
 }
 
 pub fn read_preview_file_bytes(connection: &Connection, asset_id: &str) -> Result<Vec<u8>, String> {
@@ -758,6 +790,162 @@ fn looks_like_remote_uri(value: &str) -> bool {
     lower.starts_with("http://") || lower.starts_with("https://")
 }
 
+fn browser_can_decode_preview(asset: &AssetAudioRecord, source_path: &Path) -> bool {
+    let format = preview_input_format(asset, source_path);
+    matches!(
+        format.as_deref(),
+        Some(
+            "wav"
+                | "wave"
+                | "mp3"
+                | "ogg"
+                | "oga"
+                | "ogv"
+                | "opus"
+                | "flac"
+                | "aac"
+                | "m4a"
+                | "m4b"
+                | "mp4"
+                | "webm"
+        )
+    )
+}
+
+fn preview_input_format(asset: &AssetAudioRecord, source_path: &Path) -> Option<String> {
+    source_path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .filter(|format| !format.trim().is_empty())
+        .or_else(|| asset.format.as_deref())
+        .map(|format| normalize_preview_format(format.trim().trim_start_matches('.')))
+}
+
+fn normalize_preview_format(format: &str) -> String {
+    match format.to_ascii_lowercase().as_str() {
+        "aif" | "aifc" => "aiff".to_string(),
+        "wave" => "wav".to_string(),
+        "oga" | "ogv" => "ogg".to_string(),
+        "m4b" | "mp4" => "m4a".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn cached_or_generate_browser_preview(
+    connection: &Connection,
+    cache_root: &Path,
+    resource_dir: Option<&Path>,
+    asset: &AssetAudioRecord,
+    source_path: &Path,
+) -> Result<PathBuf, String> {
+    let cache_key = preview_cache_key(&asset.stable_key);
+    if let Some(path) = cached_preview_path(connection, &cache_key)? {
+        return Ok(path);
+    }
+
+    let preview_dir = cache_root.join("previews");
+    fs::create_dir_all(&preview_dir).map_err(|error| error.to_string())?;
+    let preview_path = preview_dir.join(format!("{}.wav", cache_key_file_name(&cache_key)));
+    generate_browser_preview_wav(resource_dir, source_path, &preview_path)?;
+    let byte_size = fs::metadata(&preview_path)
+        .map_err(|error| error.to_string())?
+        .len() as i64;
+    connection
+        .execute(
+            "INSERT INTO cache_entries (id, cache_key, kind, asset_id, path, byte_size, pinned)
+             VALUES (?1, ?2, 'preview', ?3, ?4, ?5, 0)
+             ON CONFLICT(cache_key) DO UPDATE SET
+                asset_id = excluded.asset_id,
+                path = excluded.path,
+                byte_size = excluded.byte_size,
+                last_accessed_at = CURRENT_TIMESTAMP",
+            params![
+                make_id("cache"),
+                cache_key,
+                asset.id,
+                preview_path.to_string_lossy(),
+                byte_size
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(preview_path)
+}
+
+fn cached_preview_path(
+    connection: &Connection,
+    cache_key: &str,
+) -> Result<Option<PathBuf>, String> {
+    let path = connection
+        .query_row(
+            "SELECT path
+             FROM cache_entries
+             WHERE kind = 'preview' AND cache_key = ?1
+             LIMIT 1",
+            params![cache_key],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    if !Path::new(&path).is_file() {
+        return Ok(None);
+    }
+    connection
+        .execute(
+            "UPDATE cache_entries SET last_accessed_at = CURRENT_TIMESTAMP WHERE cache_key = ?1",
+            params![cache_key],
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(Some(PathBuf::from(path)))
+}
+
+fn generate_browser_preview_wav(
+    resource_dir: Option<&Path>,
+    source_path: &Path,
+    preview_path: &Path,
+) -> Result<(), String> {
+    let ffmpeg = resolve_ffmpeg(resource_dir)?;
+    let token = CancellationToken::default();
+    let deadline = JobDeadline::new(std::time::Duration::from_secs(
+        PREVIEW_DECODE_DEADLINE_SECONDS,
+    ));
+    let output = run_ffmpeg(
+        &ffmpeg,
+        vec![
+            "-hide_banner".to_string(),
+            "-loglevel".to_string(),
+            "error".to_string(),
+            "-y".to_string(),
+            "-i".to_string(),
+            source_path.to_string_lossy().to_string(),
+            "-map".to_string(),
+            "0:a:0".to_string(),
+            "-vn".to_string(),
+            "-acodec".to_string(),
+            "pcm_s16le".to_string(),
+            preview_path.to_string_lossy().to_string(),
+        ],
+        &token,
+        &deadline,
+        "preview decode job",
+    );
+
+    match output {
+        Ok(output) if output.status.success() => Ok(()),
+        Ok(output) => {
+            let _ = fs::remove_file(preview_path);
+            let detail = String::from_utf8_lossy(&output.stderr);
+            Err(format!("preview conversion failed: {}", detail.trim()))
+        }
+        Err(error) => {
+            let _ = fs::remove_file(preview_path);
+            Err(error)
+        }
+    }
+}
+
 fn cached_waveform_file(
     connection: &Connection,
     asset_id: &str,
@@ -1171,6 +1359,7 @@ fn generate_ffmpeg_wav_peaks(
         ],
         token,
         deadline,
+        "waveform job",
     );
 
     match output {
@@ -1280,6 +1469,7 @@ fn run_ffmpeg(
     args: Vec<String>,
     token: &CancellationToken,
     deadline: &JobDeadline,
+    job_label: &str,
 ) -> Result<std::process::Output, String> {
     let mut command = Command::new(ffmpeg);
     command
@@ -1301,7 +1491,7 @@ fn run_ffmpeg(
                 .wait_with_output()
                 .map_err(|error| format!("failed to read ffmpeg output: {error}"));
         }
-        if let Err(error) = deadline.check(token, "waveform job") {
+        if let Err(error) = deadline.check(token, job_label) {
             let _ = child.kill();
             let _ = child.wait();
             return Err(error);
@@ -2134,6 +2324,19 @@ fn waveform_cache_key(content_key: &str, channel_mode: &str, samples_per_peak: i
     format!("waveform:{content_key}:v{WAVEFORM_CACHE_VERSION}:{channel_mode}:{samples_per_peak}")
 }
 
+fn preview_cache_key(content_key: &str) -> String {
+    format!("preview:{content_key}:browser-wav:v{PREVIEW_CACHE_VERSION}")
+}
+
+fn cache_key_file_name(cache_key: &str) -> String {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in cache_key.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}")
+}
+
 fn processing_hash_for_gain(gain_db: f64) -> String {
     if gain_db.abs() < 0.005 {
         "processing:none".to_string()
@@ -2482,6 +2685,90 @@ mod tests {
         assert!(!peaks.channels[0].maximums.is_empty());
         assert!(!peaks.peak_file_path.is_empty());
         let _ = fs::remove_file(m4a_path);
+        let _ = fs::remove_dir_all(cache_root);
+    }
+
+    #[test]
+    fn transcodes_aiff_preview_and_waveform_with_ffmpeg_when_available() {
+        let resource_dir = std::env::current_dir().expect("read current directory");
+        let Ok(ffmpeg) = resolve_ffmpeg(Some(&resource_dir)) else {
+            return;
+        };
+        let aiff_path =
+            std::env::temp_dir().join(format!("sonilabs_short_tone_{}.aiff", std::process::id()));
+        let source_wav = fixture_audio_path("short-tone.wav");
+        let mut command = Command::new(ffmpeg);
+        command.args(vec![
+            "-hide_banner".to_string(),
+            "-loglevel".to_string(),
+            "error".to_string(),
+            "-y".to_string(),
+            "-i".to_string(),
+            source_wav.to_string_lossy().to_string(),
+            "-c:a".to_string(),
+            "pcm_s16be".to_string(),
+            aiff_path.to_string_lossy().to_string(),
+        ]);
+        #[cfg(target_os = "windows")]
+        command.creation_flags(CREATE_NO_WINDOW);
+        let Ok(output) = command.output() else {
+            return;
+        };
+        if !output.status.success() {
+            let _ = fs::remove_file(&aiff_path);
+            return;
+        }
+
+        let connection = test_connection();
+        let asset_id = insert_fixture_asset_at_path(
+            &connection,
+            "asset_aiff",
+            "fixture-aiff-key",
+            &aiff_path,
+            "aiff",
+        );
+        let runtime = test_runtime();
+        let cache_root =
+            std::env::temp_dir().join(format!("sonilabs_aiff_preview_{}", std::process::id()));
+        let resolution = resolve_preview_file_with_sidecar(
+            &connection,
+            &cache_root,
+            Some(&resource_dir),
+            &asset_id,
+            "original",
+        )
+        .expect("resolve aiff preview");
+        let preview_bytes = fs::read(&resolution.path).expect("read preview wav");
+
+        assert_ne!(resolution.path, aiff_path.to_string_lossy());
+        assert_eq!(&preview_bytes[0..4], b"RIFF");
+        assert_eq!(&preview_bytes[8..12], b"WAVE");
+
+        let cached = resolve_preview_file_with_sidecar(
+            &connection,
+            &cache_root,
+            Some(&resource_dir),
+            &asset_id,
+            "original",
+        )
+        .expect("resolve cached aiff preview");
+        assert_eq!(cached.path, resolution.path);
+
+        let peaks = get_waveform_peaks_with_sidecar(
+            &runtime,
+            &connection,
+            &cache_root,
+            Some(&resource_dir),
+            &asset_id,
+            "fixture-aiff-key",
+            "source",
+            256,
+        )
+        .expect("generate aiff waveform");
+        assert!(!peaks.channels.is_empty());
+        assert!(!peaks.channels[0].maximums.is_empty());
+
+        let _ = fs::remove_file(aiff_path);
         let _ = fs::remove_dir_all(cache_root);
     }
 

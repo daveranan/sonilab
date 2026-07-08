@@ -1223,15 +1223,30 @@ fn app_restart_recovery(app: AppHandle) -> Result<reliability::RestartRecoveryRe
 }
 
 #[tauri::command]
-fn resolve_preview_file(
+async fn resolve_preview_file(
     app: AppHandle,
     asset_id: String,
     requested_mode: String,
 ) -> Result<audio::PreviewFileResolution, String> {
-    apply_migrations(&app)?;
-    let path = migrations::app_database_path(&app)?;
-    let connection = Connection::open(path).map_err(|error| error.to_string())?;
-    audio::resolve_preview_file(&connection, &asset_id, &requested_mode)
+    tauri::async_runtime::spawn_blocking(move || {
+        apply_migrations(&app)?;
+        let path = migrations::app_database_path(&app)?;
+        let connection = Connection::open(path).map_err(|error| error.to_string())?;
+        let cache_root = app
+            .path()
+            .app_cache_dir()
+            .map_err(|error| error.to_string())?;
+        let resource_dir = app.path().resource_dir().ok();
+        audio::resolve_preview_file_with_sidecar(
+            &connection,
+            &cache_root,
+            resource_dir.as_deref(),
+            &asset_id,
+            &requested_mode,
+        )
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]

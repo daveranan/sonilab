@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import { tagCategories } from "./tagCategories";
-import { applySearchSuggestion, resolveSearchSuggestions } from "./searchSuggestions";
+import {
+  applySearchSuggestion,
+  commitSearchTokenAtCaret,
+  resolveSearchSuggestions,
+} from "./searchSuggestions";
 
 describe("search suggestions", () => {
   it("suggests filter fields for the active token", () => {
@@ -43,5 +47,52 @@ describe("search suggestions", () => {
     const applied = applySearchSuggestion("tag:me", 6, valueSuggestion);
 
     expect(applied.value).toBe("tag:metal ");
+  });
+
+  it("suggests tag chips and text intent for bare taxonomy terms", () => {
+    const result = resolveSearchSuggestions("wind", 4);
+
+    expect(result.title).toBe("Search intent");
+    expect(result.suggestions[0]).toMatchObject({
+      label: "tag:wind",
+      insertText: "tag:wind ",
+      detail: "Use as tag chip",
+    });
+    expect(result.suggestions[result.suggestions.length - 1]).toMatchObject({
+      label: "wind",
+      detail: "Keep as text",
+    });
+  });
+
+  it("keeps invalid bare terms as text intent", () => {
+    const result = resolveSearchSuggestions("storm", 5);
+
+    expect(result.suggestions).toEqual([
+      {
+        id: "text-intent:storm",
+        kind: "text",
+        label: "storm",
+        insertText: "storm ",
+        detail: "No matching tag; search text",
+      },
+    ]);
+  });
+
+  it("commits comma-delimited taxonomy terms as tag filters", () => {
+    expect(commitSearchTokenAtCaret("wind", 4)).toEqual({
+      value: "tag:wind ",
+      caretIndex: 9,
+    });
+    expect(commitSearchTokenAtCaret("tag:wind rain", 13)).toEqual({
+      value: "tag:wind tag:rain ",
+      caretIndex: 18,
+    });
+  });
+
+  it("commits comma-delimited unknown terms as text", () => {
+    expect(commitSearchTokenAtCaret("storm", 5)).toEqual({
+      value: "storm ",
+      caretIndex: 6,
+    });
   });
 });

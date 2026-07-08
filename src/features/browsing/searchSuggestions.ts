@@ -1,7 +1,7 @@
 import type { SearchFilterField } from "./browseTypes";
-import { tagCategories } from "./tagCategories";
+import { canonicalizeTag, tagCategories } from "./tagCategories";
 
-export type SearchSuggestionKind = "field" | "value";
+export type SearchSuggestionKind = "field" | "value" | "text";
 
 export type SearchSuggestion = {
   id: string;
@@ -28,6 +28,7 @@ type SearchFieldDescriptor = {
 const tagSuggestionValues = Array.from(
   new Set(tagCategories.flatMap((category) => category.tags)),
 ).sort((left, right) => left.localeCompare(right));
+const tagSuggestionValueSet = new Set(tagSuggestionValues);
 
 const fieldDescriptors: SearchFieldDescriptor[] = [
   {
@@ -145,7 +146,11 @@ const fieldDescriptors: SearchFieldDescriptor[] = [
   { field: "headroom", detail: "Headroom dB", values: [">=3", "1..6"] },
 ];
 
-function activeTokenRange(
+function formatFilterValue(value: string): string {
+  return /\s/.test(value) ? `"${value.replace(/"/g, '\\"')}"` : value;
+}
+
+export function activeTokenRange(
   query: string,
   caretIndex: number,
 ): { start: number; end: number } {
@@ -163,6 +168,37 @@ function normalizeToken(token: string): { negated: boolean; value: string } {
   return token.startsWith("-")
     ? { negated: true, value: token.slice(1) }
     : { negated: false, value: token };
+}
+
+function resolveBareTokenSuggestions(
+  rawValue: string,
+  negated: boolean,
+): SearchSuggestion[] {
+  const normalizedValue = canonicalizeTag(rawValue);
+  if (!normalizedValue) return [];
+
+  const tagSuggestions = tagSuggestionValues
+    .filter((candidate) => candidate.startsWith(normalizedValue))
+    .slice(0, 6)
+    .map((candidate) => ({
+      id: `tag-intent:${candidate}`,
+      kind: "value" as const,
+      label: `${negated ? "-" : ""}tag:${candidate}`,
+      insertText: `${negated ? "-" : ""}tag:${formatFilterValue(candidate)} `,
+      detail: "Use as tag chip",
+      field: "tag" as const,
+    }));
+
+  const exactTag = tagSuggestionValueSet.has(normalizedValue);
+  const textSuggestion = {
+    id: `text-intent:${normalizedValue}`,
+    kind: "text" as const,
+    label: `${negated ? "-" : ""}${rawValue}`,
+    insertText: `${negated ? "-" : ""}${rawValue} `,
+    detail: exactTag ? "Keep as text" : "No matching tag; search text",
+  };
+
+  return [...tagSuggestions, textSuggestion];
 }
 
 export function resolveSearchSuggestions(
@@ -193,7 +229,9 @@ export function resolveSearchSuggestions(
         id: `${descriptor.field}:${candidate}`,
         kind: "value" as const,
         label: candidate,
-        insertText: `${negated ? "-" : ""}${descriptor.field}:${candidate} `,
+        insertText: `${negated ? "-" : ""}${descriptor.field}:${formatFilterValue(
+          candidate,
+        )} `,
         detail: descriptor.detail,
         field: descriptor.field,
       }));
@@ -207,7 +245,7 @@ export function resolveSearchSuggestions(
   }
 
   const fieldPrefix = value.toLowerCase();
-  const suggestions = fieldDescriptors
+  const fieldSuggestions = fieldDescriptors
     .filter((entry) => entry.field.startsWith(fieldPrefix))
     .map((entry) => ({
       id: entry.field,
@@ -217,10 +255,16 @@ export function resolveSearchSuggestions(
       detail: entry.detail,
       field: entry.field,
     }));
+  const bareTokenSuggestions = fieldPrefix
+    ? resolveBareTokenSuggestions(value, negated)
+    : [];
 
   return {
-    title: "Filters",
-    suggestions,
+    title:
+      fieldSuggestions.length === 0 && bareTokenSuggestions.length > 0
+        ? "Search intent"
+        : "Filters",
+    suggestions: [...fieldSuggestions, ...bareTokenSuggestions],
     activeTokenStart: start,
     activeTokenEnd: end,
   };
@@ -237,6 +281,33 @@ export function applySearchSuggestion(
   const needsLeadingSpace = before.length > 0 && !/\s$/.test(before);
   const insertText = `${needsLeadingSpace ? " " : ""}${suggestion.insertText}`;
   const nextValue = `${before}${insertText}${after}`;
+  const nextCaret = before.length + insertText.length;
+
+  return {
+    value: nextValue,
+    caretIndex: nextCaret,
+  };
+}
+
+export function commitSearchTokenAtCaret(
+  query: string,
+  caretIndex: number,
+): { value: string; caretIndex: number } | null {
+  const { start, end } = activeTokenRange(query, caretIndex);
+  const rawToken = query.slice(start, end);
+  const { negated, value } = normalizeToken(rawToken);
+  if (!value || value.includes(":")) return null;
+
+  const normalizedValue = canonicalizeTag(value);
+  const insertValue =
+    normalizedValue && tagSuggestionValueSet.has(normalizedValue)
+      ? `${negated ? "-" : ""}tag:${formatFilterValue(normalizedValue)}`
+      : rawToken;
+  const before = query.slice(0, start);
+  const after = query.slice(end);
+  const needsLeadingSpace = before.length > 0 && !/\s$/.test(before);
+  const insertText = `${needsLeadingSpace ? " " : ""}${insertValue} `;
+  const nextValue = `${before}${insertText}${after.replace(/^\s+/, "")}`;
   const nextCaret = before.length + insertText.length;
 
   return {
