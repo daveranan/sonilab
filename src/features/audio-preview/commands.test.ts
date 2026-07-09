@@ -153,6 +153,7 @@ describe("export file drag command helper", () => {
       format: "wav",
       formatSettings: { wavBitDepth: 16 },
       gainDb: 0,
+      channelMode: "channel:1",
       eq: { enabled: true, lowDb: 2, midDb: -1, highDb: 0.5 },
       pitchSemitones: 3,
       includeAttributionSidecar: false,
@@ -186,9 +187,9 @@ describe("export file drag command helper", () => {
           regionFadeOutSeconds: 0.02,
           regionFadeOutSlope: 2,
         }),
-        processingHash: "processing:eq:2.00:-1.00:0.50;pitch:3.00",
+        processingHash: "processing:channel:1;eq:2.00:-1.00:0.50;pitch:3.00",
         processingJson:
-          '{"chainOrder":["gain","eq","pitch"],"eq":{"enabled":true,"lowDb":2,"midDb":-1,"highDb":0.5,"minDb":-12,"maxDb":12},"gain":{"enabled":true,"gainDb":0,"minDb":-24,"maxDb":36},"pitch":{"enabled":true,"semitones":3,"minSemitones":-12,"maxSemitones":12},"version":1}',
+          '{"chainOrder":["gain","channel","eq","pitch"],"channel":{"enabled":true,"channels":[1]},"eq":{"enabled":true,"lowDb":2,"midDb":-1,"highDb":0.5,"minDb":-12,"maxDb":12},"gain":{"enabled":true,"gainDb":0,"minDb":-24,"maxDb":36},"pitch":{"enabled":true,"semitones":3,"minSemitones":-12,"maxSemitones":12},"version":1}',
       }),
     );
   });

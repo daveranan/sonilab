@@ -190,9 +190,17 @@ struct PitchStage {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct ChannelStage {
+    enabled: bool,
+    channels: Vec<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct GainProcessingChain {
     version: i64,
     gain: GainStage,
+    channel: Option<ChannelStage>,
     eq: Option<EqStage>,
     pitch: Option<PitchStage>,
     chain_order: Vec<String>,
@@ -919,6 +927,9 @@ fn is_noop_processing_chain(chain: &GainProcessingChain) -> bool {
             .iter()
             .all(|stage| matches!(stage.as_str(), "gain" | "eq" | "pitch"))
         && (!chain.gain.enabled || chain.gain.gain_db.abs() < 0.000_001)
+        && chain.channel.as_ref().map_or(true, |channel| {
+            !channel.enabled || channel.channels.is_empty()
+        })
         && chain.eq.as_ref().map_or(true, |eq| {
             !eq.enabled
                 || (eq.low_db.abs() < 0.000_001
@@ -1088,7 +1099,7 @@ fn validate_gain_processing_chain(
     }
     let mut seen = std::collections::HashSet::new();
     for stage in &chain.chain_order {
-        if !matches!(stage.as_str(), "gain" | "eq" | "pitch") {
+        if !matches!(stage.as_str(), "gain" | "channel" | "eq" | "pitch") {
             return Err("unsupported processing stage".to_string());
         }
         if !seen.insert(stage.as_str()) {
@@ -1097,6 +1108,21 @@ fn validate_gain_processing_chain(
     }
     if !chain.gain.enabled || chain.gain.min_db != -24.0 || chain.gain.max_db != 36.0 {
         return Err("invalid gain stage".to_string());
+    }
+    if chain.chain_order.iter().any(|stage| stage == "channel") {
+        let channel = chain
+            .channel
+            .as_ref()
+            .ok_or_else(|| "missing channel stage".to_string())?;
+        if !channel.enabled || channel.channels.is_empty() {
+            return Err("invalid channel stage".to_string());
+        }
+        let mut seen = std::collections::HashSet::new();
+        for index in &channel.channels {
+            if *index > 63 || !seen.insert(*index) {
+                return Err("invalid channel stage".to_string());
+            }
+        }
     }
     if chain.chain_order.iter().any(|stage| stage == "eq") {
         let eq = chain
@@ -1477,6 +1503,39 @@ fn chain_has_native_only_processing(chain: &GainProcessingChain) -> bool {
     })
 }
 
+fn selected_channel_indexes(
+    chain: &GainProcessingChain,
+    source_channels: u16,
+) -> Result<Option<Vec<usize>>, String> {
+    let Some(channel) = chain.channel.as_ref().filter(|channel| channel.enabled) else {
+        return Ok(None);
+    };
+    if channel.channels.is_empty() {
+        return Ok(None);
+    }
+    let source_count = usize::from(source_channels);
+    if let Some(index) = channel
+        .channels
+        .iter()
+        .find(|index| **index >= source_count)
+    {
+        return Err(format!("selected channel {} is unavailable", index + 1));
+    }
+    Ok(Some(channel.channels.clone()))
+}
+
+fn output_channel_count(selected_channels: Option<&[usize]>, source_channels: u16) -> u16 {
+    selected_channels
+        .map(|channels| channels.len() as u16)
+        .unwrap_or(source_channels)
+}
+
+fn source_channel_for_output(selected_channels: Option<&[usize]>, output_channel: usize) -> usize {
+    selected_channels
+        .and_then(|channels| channels.get(output_channel).copied())
+        .unwrap_or(output_channel)
+}
+
 fn render_native_wav_intermediate_export(
     job: &ExportJobRecord,
     asset: &ExportAssetRecord,
@@ -1555,6 +1614,7 @@ fn noop_gain_processing_chain() -> GainProcessingChain {
             min_db: -24.0,
             max_db: 36.0,
         },
+        channel: None,
         eq: None,
         pitch: None,
         chain_order: vec!["gain".to_string()],
@@ -1591,6 +1651,7 @@ fn render_native_wav_export(
                 pcm.sample_rate,
                 pcm.frame_count(),
             );
+            let selected_channels = selected_channel_indexes(chain, pcm.channels)?;
             let rendered = render_crossfaded_pcm_loop_16_bit(
                 &pcm,
                 start_frame,
@@ -1598,6 +1659,7 @@ fn render_native_wav_export(
                 crossfade_frames,
                 job.loop_crossfade_slope.unwrap_or(1.0).clamp(0.25, 4.0),
                 chain.gain.gain_db,
+                selected_channels.as_deref(),
                 token,
                 deadline,
             )?;
@@ -1621,6 +1683,7 @@ fn render_native_wav_export(
             frame_count,
         );
         let crossfade_slope = job.loop_crossfade_slope.unwrap_or(1.0).clamp(0.25, 4.0);
+        let selected_channels = selected_channel_indexes(chain, wav.channels)?;
         let rendered = render_crossfaded_wav_loop_16_bit(
             &bytes,
             &wav,
@@ -1629,6 +1692,7 @@ fn render_native_wav_export(
             crossfade_frames,
             crossfade_slope,
             chain.gain.gain_db,
+            selected_channels.as_deref(),
             token,
             deadline,
         )?;
@@ -1661,6 +1725,7 @@ fn render_native_wav_export(
             return Err("export range has no audio frames".to_string());
         }
         let (fade_in_seconds, fade_out_seconds) = normalized_region_fade_seconds(job);
+        let selected_channels = selected_channel_indexes(chain, pcm.channels)?;
         let rendered = render_pcm_region_16_bit(
             &pcm,
             start_frame,
@@ -1670,6 +1735,7 @@ fn render_native_wav_export(
             job.region_fade_in_slope.unwrap_or(1.0),
             fade_out_seconds,
             job.region_fade_out_slope.unwrap_or(1.0),
+            selected_channels.as_deref(),
             token,
             deadline,
         )?;
@@ -1691,6 +1757,7 @@ fn render_native_wav_export(
         return Err("export range has no audio frames".to_string());
     }
     let (fade_in_seconds, fade_out_seconds) = normalized_region_fade_seconds(job);
+    let selected_channels = selected_channel_indexes(chain, wav.channels)?;
     let rendered = render_wav_region_16_bit(
         &bytes,
         &wav,
@@ -1701,6 +1768,7 @@ fn render_native_wav_export(
         job.region_fade_in_slope.unwrap_or(1.0),
         fade_out_seconds,
         job.region_fade_out_slope.unwrap_or(1.0),
+        selected_channels.as_deref(),
         token,
         deadline,
     )?;
@@ -1746,6 +1814,7 @@ fn copy_wav_region_export(
             1.0,
             0.0,
             1.0,
+            None,
             token,
             deadline,
         )?;
@@ -1946,6 +2015,7 @@ fn ffmpeg_processing_filters(chain: &GainProcessingChain) -> Vec<String> {
                     filters.push(format!("volume={gain_db:.2}dB"));
                 }
             }
+            "channel" => append_channel_filter(chain.channel.as_ref(), &mut filters),
             "eq" => append_eq_filters(chain.eq.as_ref(), &mut filters),
             "pitch" => append_pitch_filters(chain.pitch.as_ref(), &mut filters),
             _ => {}
@@ -1958,12 +2028,35 @@ fn ffmpeg_processing_filters_excluding_gain(chain: &GainProcessingChain) -> Vec<
     let mut filters = Vec::new();
     for stage in &chain.chain_order {
         match stage.as_str() {
+            "channel" => append_channel_filter(chain.channel.as_ref(), &mut filters),
             "eq" => append_eq_filters(chain.eq.as_ref(), &mut filters),
             "pitch" => append_pitch_filters(chain.pitch.as_ref(), &mut filters),
             _ => {}
         }
     }
     filters
+}
+
+fn append_channel_filter(channel: Option<&ChannelStage>, filters: &mut Vec<String>) {
+    let Some(channel) = channel.filter(|channel| channel.enabled) else {
+        return;
+    };
+    if channel.channels.is_empty() {
+        return;
+    }
+    let layout = match channel.channels.len() {
+        1 => "mono".to_string(),
+        2 => "stereo".to_string(),
+        count => format!("{count}c"),
+    };
+    let mappings = channel
+        .channels
+        .iter()
+        .enumerate()
+        .map(|(output, source)| format!("c{output}=c{source}"))
+        .collect::<Vec<_>>()
+        .join("|");
+    filters.push(format!("pan={layout}|{mappings}"));
 }
 
 fn append_eq_filters(eq: Option<&EqStage>, filters: &mut Vec<String>) {
@@ -2236,6 +2329,17 @@ fn processing_hash_for_chain(chain: &GainProcessingChain) -> String {
     if gain_db.abs() >= 0.005 {
         parts.push(format!("gain:{gain_db:.2}"));
     }
+    if let Some(channel) = chain.channel.as_ref().filter(|channel| channel.enabled) {
+        if !channel.channels.is_empty() {
+            let channels = channel
+                .channels
+                .iter()
+                .map(usize::to_string)
+                .collect::<Vec<_>>()
+                .join(",");
+            parts.push(format!("channel:{channels}"));
+        }
+    }
     if let Some(eq) = chain.eq.as_ref().filter(|eq| eq.enabled) {
         let low = eq.low_db.clamp(-12.0, 12.0);
         let mid = eq.mid_db.clamp(-12.0, 12.0);
@@ -2291,11 +2395,12 @@ fn render_wav_region_16_bit(
     fade_in_slope: f64,
     fade_out_seconds: f64,
     fade_out_slope: f64,
+    selected_channels: Option<&[usize]>,
     token: &CancellationToken,
     deadline: &JobDeadline,
 ) -> Result<Vec<u8>, String> {
     let frame_count = end_frame - start_frame;
-    let output_channels = wav.channels;
+    let output_channels = output_channel_count(selected_channels, wav.channels);
     let output_bits = 16_u16;
     let output_block_align = output_channels * (output_bits / 8);
     let data_size = frame_count * usize::from(output_block_align);
@@ -2323,9 +2428,10 @@ fn render_wav_region_16_bit(
             fade_out_frames,
             fade_out_slope,
         );
-        for channel in 0..wav.channels as usize {
+        for output_channel in 0..output_channels as usize {
+            let source_channel = source_channel_for_output(selected_channels, output_channel);
             let sample =
-                read_wav_sample(bytes, wav, frame_index, channel)? * linear_gain * fade_gain;
+                read_wav_sample(bytes, wav, frame_index, source_channel)? * linear_gain * fade_gain;
             let quantized = (sample.clamp(-1.0, 1.0) * i16::MAX as f32).round() as i16;
             output.extend_from_slice(&quantized.to_le_bytes());
         }
@@ -2342,6 +2448,7 @@ fn render_pcm_region_16_bit(
     fade_in_slope: f64,
     fade_out_seconds: f64,
     fade_out_slope: f64,
+    selected_channels: Option<&[usize]>,
     token: &CancellationToken,
     deadline: &JobDeadline,
 ) -> Result<Vec<u8>, String> {
@@ -2349,11 +2456,12 @@ fn render_pcm_region_16_bit(
     if frame_count == 0 {
         return Err("export range has no audio frames".to_string());
     }
-    let data_size = frame_count * usize::from(pcm.channels) * 2;
+    let output_channels = output_channel_count(selected_channels, pcm.channels);
+    let data_size = frame_count * usize::from(output_channels) * 2;
     let mut output = Vec::with_capacity(44 + data_size);
     write_wav_header(
         &mut output,
-        pcm.channels,
+        output_channels,
         pcm.sample_rate,
         16,
         data_size as u32,
@@ -2374,8 +2482,9 @@ fn render_pcm_region_16_bit(
             fade_out_frames,
             fade_out_slope,
         );
-        for channel in 0..pcm.channels as usize {
-            let sample = pcm.sample(frame_index, channel) * linear_gain * fade_gain;
+        for output_channel in 0..output_channels as usize {
+            let source_channel = source_channel_for_output(selected_channels, output_channel);
+            let sample = pcm.sample(frame_index, source_channel) * linear_gain * fade_gain;
             let quantized = (sample.clamp(-1.0, 1.0) * i16::MAX as f32).round() as i16;
             output.extend_from_slice(&quantized.to_le_bytes());
         }
@@ -2419,6 +2528,7 @@ fn render_crossfaded_wav_loop_16_bit(
     crossfade_frames: usize,
     crossfade_slope: f64,
     gain_db: f64,
+    selected_channels: Option<&[usize]>,
     token: &CancellationToken,
     deadline: &JobDeadline,
 ) -> Result<Vec<u8>, String> {
@@ -2428,7 +2538,7 @@ fn render_crossfaded_wav_loop_16_bit(
     }
     let fade_frames = crossfade_frames.clamp(1, (region_frames - 1) / 2);
     let output_frames = region_frames - fade_frames;
-    let output_channels = wav.channels;
+    let output_channels = output_channel_count(selected_channels, wav.channels);
     let output_bits = 16_u16;
     let output_block_align = output_channels * (output_bits / 8);
     let data_size = output_frames * usize::from(output_block_align);
@@ -2446,23 +2556,28 @@ fn render_crossfaded_wav_loop_16_bit(
         if output_frame % 4096 == 0 {
             deadline.check(token, "export job")?;
         }
-        for channel in 0..wav.channels as usize {
+        for output_channel in 0..output_channels as usize {
+            let source_channel = source_channel_for_output(selected_channels, output_channel);
             let sample = if output_frame >= crossfade_start_frame {
                 let fade_frame = output_frame - crossfade_start_frame;
                 let denominator = fade_frames.saturating_sub(1).max(1) as f32;
                 let progress = fade_frame as f32 / denominator;
                 let head_weight = progress.powf(crossfade_slope as f32);
                 let tail_weight = 1.0 - head_weight;
-                let head = read_wav_sample(bytes, wav, start_frame + fade_frame, channel)?;
-                let tail =
-                    read_wav_sample(bytes, wav, end_frame - fade_frames + fade_frame, channel)?;
+                let head = read_wav_sample(bytes, wav, start_frame + fade_frame, source_channel)?;
+                let tail = read_wav_sample(
+                    bytes,
+                    wav,
+                    end_frame - fade_frames + fade_frame,
+                    source_channel,
+                )?;
                 tail * tail_weight + head * head_weight
             } else {
                 read_wav_sample(
                     bytes,
                     wav,
                     start_frame + fade_frames + output_frame,
-                    channel,
+                    source_channel,
                 )?
             } * linear_gain;
             let quantized = (sample.clamp(-1.0, 1.0) * i16::MAX as f32).round() as i16;
@@ -2479,6 +2594,7 @@ fn render_crossfaded_pcm_loop_16_bit(
     crossfade_frames: usize,
     crossfade_slope: f64,
     gain_db: f64,
+    selected_channels: Option<&[usize]>,
     token: &CancellationToken,
     deadline: &JobDeadline,
 ) -> Result<Vec<u8>, String> {
@@ -2488,11 +2604,12 @@ fn render_crossfaded_pcm_loop_16_bit(
     }
     let fade_frames = crossfade_frames.clamp(1, (region_frames - 1) / 2);
     let output_frames = region_frames - fade_frames;
-    let data_size = output_frames * usize::from(pcm.channels) * 2;
+    let output_channels = output_channel_count(selected_channels, pcm.channels);
+    let data_size = output_frames * usize::from(output_channels) * 2;
     let mut output = Vec::with_capacity(44 + data_size);
     write_wav_header(
         &mut output,
-        pcm.channels,
+        output_channels,
         pcm.sample_rate,
         16,
         data_size as u32,
@@ -2503,17 +2620,18 @@ fn render_crossfaded_pcm_loop_16_bit(
         if output_frame % 4096 == 0 {
             deadline.check(token, "export job")?;
         }
-        for channel in 0..pcm.channels as usize {
+        for output_channel in 0..output_channels as usize {
+            let source_channel = source_channel_for_output(selected_channels, output_channel);
             let sample = if output_frame >= crossfade_start_frame {
                 let fade_frame = output_frame - crossfade_start_frame;
                 let progress = fade_frame as f32 / fade_frames.saturating_sub(1).max(1) as f32;
                 let head_weight = progress.powf(crossfade_slope as f32);
                 let tail_weight = 1.0 - head_weight;
-                let head = pcm.sample(start_frame + fade_frame, channel);
-                let tail = pcm.sample(end_frame - fade_frames + fade_frame, channel);
+                let head = pcm.sample(start_frame + fade_frame, source_channel);
+                let tail = pcm.sample(end_frame - fade_frames + fade_frame, source_channel);
                 tail * tail_weight + head * head_weight
             } else {
-                pcm.sample(start_frame + fade_frames + output_frame, channel)
+                pcm.sample(start_frame + fade_frames + output_frame, source_channel)
             } * linear_gain;
             let quantized = (sample.clamp(-1.0, 1.0) * i16::MAX as f32).round() as i16;
             output.extend_from_slice(&quantized.to_le_bytes());
@@ -3123,6 +3241,12 @@ mod tests {
         )
     }
 
+    fn test_channel_processing_json(channel: usize) -> String {
+        format!(
+            r#"{{"chainOrder":["gain","channel"],"channel":{{"enabled":true,"channels":[{channel}]}},"gain":{{"enabled":true,"gainDb":0,"minDb":-24,"maxDb":36}},"version":1}}"#
+        )
+    }
+
     fn test_export_input(asset_id: &str) -> ExportJobInput {
         ExportJobInput {
             asset_id: asset_id.to_string(),
@@ -3210,6 +3334,39 @@ mod tests {
         bytes
     }
 
+    fn stereo_pcm16_wav_bytes() -> Vec<u8> {
+        let sample_rate = 48_000_u32;
+        let channels = 2_u16;
+        let bits_per_sample = 16_u16;
+        let block_align = channels * (bits_per_sample / 8);
+        let byte_rate = sample_rate * u32::from(block_align);
+        let frames = [
+            (-3000_i16, 12_000_i16),
+            (-2000_i16, 10_000_i16),
+            (-1000_i16, 8_000_i16),
+            (0_i16, 6_000_i16),
+        ];
+        let data_size = (frames.len() * usize::from(block_align)) as u32;
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&(36 + data_size).to_le_bytes());
+        bytes.extend_from_slice(b"WAVEfmt ");
+        bytes.extend_from_slice(&16_u32.to_le_bytes());
+        bytes.extend_from_slice(&1_u16.to_le_bytes());
+        bytes.extend_from_slice(&channels.to_le_bytes());
+        bytes.extend_from_slice(&sample_rate.to_le_bytes());
+        bytes.extend_from_slice(&byte_rate.to_le_bytes());
+        bytes.extend_from_slice(&block_align.to_le_bytes());
+        bytes.extend_from_slice(&bits_per_sample.to_le_bytes());
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&data_size.to_le_bytes());
+        for (left, right) in frames {
+            bytes.extend_from_slice(&left.to_le_bytes());
+            bytes.extend_from_slice(&right.to_le_bytes());
+        }
+        bytes
+    }
+
     fn ms_adpcm_wav_bytes() -> Vec<u8> {
         let sample_rate = 44_100_u32;
         let channels = 1_u16;
@@ -3287,6 +3444,21 @@ mod tests {
             job.processing_hash,
             "processing:eq:2.00:-1.00:0.50;pitch:3.00"
         );
+    }
+
+    #[test]
+    fn queues_export_with_channel_processing_snapshot() {
+        let connection = test_connection();
+        let mut input = test_export_input("asset_test");
+        input.processing_json = test_channel_processing_json(1);
+        input.processing_hash = "processing:channel:1".to_string();
+        let job = queue_export_job(&connection, input).expect("queue export");
+        let chain: GainProcessingChain =
+            serde_json::from_str(&test_channel_processing_json(1)).expect("chain");
+        let filters = ffmpeg_processing_filters(&chain);
+
+        assert_eq!(job.processing_hash, "processing:channel:1");
+        assert!(filters.iter().any(|filter| filter == "pan=mono|c0=c1"));
     }
 
     #[test]
@@ -3798,6 +3970,36 @@ mod tests {
     }
 
     #[test]
+    fn native_wav_render_outputs_selected_channel_only() {
+        let bytes = stereo_pcm16_wav_bytes();
+        let wav = parse_wav_info(&bytes).expect("parse stereo wav");
+        let frame_count = wav.data_size / usize::from(wav.block_align);
+
+        let rendered = render_wav_region_16_bit(
+            &bytes,
+            &wav,
+            0,
+            frame_count,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            1.0,
+            Some(&[1]),
+            &CancellationToken::default(),
+            &JobDeadline::new(Duration::from_secs(5)),
+        )
+        .expect("render selected channel");
+
+        let rendered_wav = parse_wav_info(&rendered).expect("parse rendered wav");
+        assert_eq!(rendered_wav.channels, 1);
+        let original_right = read_wav_sample(&bytes, &wav, 0, 1).expect("right sample");
+        let rendered_sample =
+            read_wav_sample(&rendered, &rendered_wav, 0, 0).expect("rendered sample");
+        assert!((rendered_sample - original_right).abs() < 0.0001);
+    }
+
+    #[test]
     fn crossfade_accepts_wave_format_extensible_pcm() {
         let bytes = extensible_pcm16_wav_bytes();
         let wav = parse_wav_info(&bytes).expect("parse extensible wav");
@@ -3811,6 +4013,7 @@ mod tests {
             24,
             1.0,
             0.0,
+            None,
             &CancellationToken::default(),
             &JobDeadline::new(Duration::from_secs(5)),
         )
@@ -3838,6 +4041,7 @@ mod tests {
             24,
             1.0,
             0.0,
+            None,
             &CancellationToken::default(),
             &JobDeadline::new(Duration::from_secs(5)),
         )
@@ -3864,6 +4068,7 @@ mod tests {
             2,
             1.0,
             0.0,
+            None,
             &CancellationToken::default(),
             &JobDeadline::new(Duration::from_secs(5)),
         )

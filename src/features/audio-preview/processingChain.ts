@@ -1,5 +1,5 @@
 import { clampEqGainDb, clampGainDb, clampPitchSemitones } from "./audioMath";
-import type { EqualizerSettings } from "./types";
+import type { ChannelMonitorMode, EqualizerSettings } from "./types";
 
 export type GainStage = {
   enabled: true;
@@ -24,12 +24,18 @@ export type PitchStage = {
   maxSemitones: 12;
 };
 
+export type ChannelStage = {
+  enabled: true;
+  channels: number[];
+};
+
 export type ProcessingChain = {
   version: 1;
   gain: GainStage;
+  channel?: ChannelStage;
   eq?: EqStage;
   pitch?: PitchStage;
-  chainOrder: ("gain" | "eq" | "pitch")[];
+  chainOrder: ("gain" | "channel" | "eq" | "pitch")[];
 };
 
 export const ANALYSIS_PROFILE_HASH = "peak-rms-v1:sample-rms:decoded-pcm";
@@ -40,12 +46,15 @@ export function createGainProcessingChain(gainDb: number): ProcessingChain {
 
 export function createProcessingChain(input: {
   gainDb: number;
+  channelMode?: ChannelMonitorMode;
   eq?: EqualizerSettings;
   pitchSemitones?: number;
 }): ProcessingChain {
+  const channel = normalizedChannelStage(input.channelMode ?? "all");
   const eq = normalizedEqStage(input.eq);
   const pitch = normalizedPitchStage(input.pitchSemitones ?? 0);
   const chainOrder: ProcessingChain["chainOrder"] = ["gain"];
+  if (channel) chainOrder.push("channel");
   if (eq) chainOrder.push("eq");
   if (pitch) chainOrder.push("pitch");
   return {
@@ -56,6 +65,7 @@ export function createProcessingChain(input: {
       minDb: -24,
       maxDb: 36,
     },
+    ...(channel ? { channel } : {}),
     ...(eq ? { eq } : {}),
     ...(pitch ? { pitch } : {}),
     chainOrder,
@@ -65,6 +75,7 @@ export function createProcessingChain(input: {
 export function canonicalProcessingChain(chain: ProcessingChain): string {
   return JSON.stringify({
     chainOrder: chain.chainOrder,
+    ...(chain.channel ? { channel: chain.channel } : {}),
     ...(chain.eq ? { eq: chain.eq } : {}),
     gain: chain.gain,
     ...(chain.pitch ? { pitch: chain.pitch } : {}),
@@ -76,6 +87,9 @@ export function processingHash(chain: ProcessingChain): string {
   const parts: string[] = [];
   if (Math.abs(chain.gain.gainDb) >= 0.005) {
     parts.push(`gain:${chain.gain.gainDb.toFixed(2)}`);
+  }
+  if (chain.channel && chain.channel.channels.length > 0) {
+    parts.push(`channel:${chain.channel.channels.join(",")}`);
   }
   if (chain.eq && hasAudibleEq(chain.eq)) {
     parts.push(
@@ -106,6 +120,24 @@ function normalizedEqStage(eq: EqualizerSettings | undefined): EqStage | null {
     maxDb: 12,
   };
   return hasAudibleEq(stage) ? stage : null;
+}
+
+function normalizedChannelStage(channelMode: ChannelMonitorMode): ChannelStage | null {
+  if (channelMode === "all") return null;
+  const channels = channelMode.startsWith("channels:")
+    ? channelMode
+        .slice("channels:".length)
+        .split(",")
+        .map((value) => Number(value))
+    : [Number(channelMode.slice("channel:".length))];
+  const uniqueChannels = Array.from(
+    new Set(channels.filter((channel) => Number.isInteger(channel) && channel >= 0)),
+  ).sort((left, right) => left - right);
+  if (uniqueChannels.length === 0) return null;
+  return {
+    enabled: true,
+    channels: uniqueChannels,
+  };
 }
 
 function normalizedPitchStage(semitones: number): PitchStage | null {

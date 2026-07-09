@@ -232,6 +232,7 @@ function normalizedFormat(value: string | null | undefined): string {
 
 function processingIsNeutral(processing: ProcessingSettings): boolean {
   return (
+    processing.channelMode === "all" &&
     Math.abs(processing.gainDb) < 0.000_001 &&
     Math.abs(processing.pitchSemitones) < 0.000_001 &&
     (!processing.eq.enabled ||
@@ -695,6 +696,7 @@ export function BottomDockPlaceholder({
           format: "wav",
           formatSettings: { wavBitDepth: 16 },
           gainDb: processing.gainDb,
+          channelMode: processing.channelMode,
           eq: processing.eq,
           pitchSemitones: processing.pitchSemitones,
           region: regionForPlayback,
@@ -764,6 +766,7 @@ export function BottomDockPlaceholder({
       previewState.status,
       processing.eq,
       processing.gainDb,
+      processing.channelMode,
       processing.pitchSemitones,
       regionFadeGapSeconds,
       regionFadeInSlope,
@@ -881,6 +884,7 @@ export function BottomDockPlaceholder({
           processing.eq.midDb.toFixed(2),
           processing.eq.highDb.toFixed(2),
           processing.pitchSemitones.toFixed(2),
+          processing.channelMode,
           tempFolder,
         ].join(":");
         if (
@@ -912,6 +916,7 @@ export function BottomDockPlaceholder({
           format: "wav",
           formatSettings: { wavBitDepth: 16 },
           gainDb: processing.gainDb,
+          channelMode: processing.channelMode,
           eq: processing.eq,
           pitchSemitones: processing.pitchSemitones,
           loopCrossfadeSeconds: crossfadeSeconds,
@@ -976,6 +981,7 @@ export function BottomDockPlaceholder({
       loopCrossfadeWidthSeconds,
       processing.eq,
       processing.gainDb,
+      processing.channelMode,
       processing.pitchSemitones,
       tempFolder,
     ],
@@ -1416,6 +1422,7 @@ export function BottomDockPlaceholder({
       format,
       formatSettings,
       gainDb: processing.gainDb,
+      channelMode: processing.channelMode,
       eq: processing.eq,
       pitchSemitones: processing.pitchSemitones,
       includeAttributionSidecar: includeSidecar,
@@ -1466,6 +1473,7 @@ export function BottomDockPlaceholder({
     preserveFolders,
     processing.eq,
     processing.gainDb,
+    processing.channelMode,
     processing.pitchSemitones,
     regionFadeGapSeconds,
     regionFadeInSlope,
@@ -1569,6 +1577,7 @@ export function BottomDockPlaceholder({
         format,
         formatSettings,
         gainDb: processing.gainDb,
+        channelMode: processing.channelMode,
         eq: processing.eq,
         pitchSemitones: processing.pitchSemitones,
         loopCrossfadeSeconds: activeLoopCrossfadeSeconds || null,
@@ -1606,6 +1615,7 @@ export function BottomDockPlaceholder({
     loopCrossfadeSlope,
     processing.eq,
     processing.gainDb,
+    processing.channelMode,
     processing.pitchSemitones,
     tempFolder,
   ]);
@@ -1650,6 +1660,7 @@ export function BottomDockPlaceholder({
             format,
             formatSettings: canNativeCut ? {} : formatSettings,
             gainDb: processing.gainDb,
+            channelMode: processing.channelMode,
             eq: processing.eq,
             pitchSemitones: processing.pitchSemitones,
             loopCrossfadeSeconds: activeLoopCrossfadeSeconds || null,
@@ -1771,6 +1782,7 @@ export function BottomDockPlaceholder({
               format,
               formatSettings: canPassthroughOriginal ? {} : formatSettings,
               gainDb: processing.gainDb,
+              channelMode: processing.channelMode,
               eq: processing.eq,
               pitchSemitones: processing.pitchSemitones,
               region: null,
@@ -1859,6 +1871,7 @@ export function BottomDockPlaceholder({
             <div className="min-w-0 flex-1">
               <WaveformCanvas
                 assetId={displayAsset.id}
+                channelMode={processing.channelMode}
                 contentKey={contentKey}
                 durationSeconds={
                   displayAsset.durationSeconds ?? activeResolution?.durationSeconds
@@ -1881,6 +1894,7 @@ export function BottomDockPlaceholder({
                 onRegionFadeCommit={handleRegionFadeCommit}
                 onRegionCommit={handleRegionCommit}
                 onMeterChange={handleMeterChange}
+                onChannelModeChange={(channelMode) => updateProcessing({ channelMode })}
                 onRegionFileDragRequest={handleRegionFileDragRequest}
                 onRegionChange={handleRegionChange}
                 region={activeRegion}

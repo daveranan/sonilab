@@ -15,6 +15,7 @@ import { processedGain } from "./audioMath";
 import { audioPreviewService, type OutputMeterSnapshot } from "./previewService";
 import { formatAudioTimeParts } from "@/lib/timeFormat";
 import type {
+  ChannelMonitorMode,
   WaveformPeakChannel,
   WaveformPeakData,
   WaveformRegion,
@@ -33,6 +34,7 @@ type WaveformCanvasProps = {
   assetId: string | null;
   contentKey: string | null;
   durationSeconds?: number | null;
+  channelMode: ChannelMonitorMode;
   loopCrossfadeDesiredSeconds?: number;
   loopCrossfadeEnabled?: boolean;
   loopCrossfadeSlope?: number;
@@ -55,6 +57,7 @@ type WaveformCanvasProps = {
   onRegionChange: (region: WaveformRegion | null) => void;
   onRegionFileDragRequest: (region: WaveformRegion) => void;
   onMeterChange?: (meter: OutputMeterSnapshot) => void;
+  onChannelModeChange: (channelMode: ChannelMonitorMode) => void;
 };
 
 type RegionFadeSettings = {
@@ -160,6 +163,44 @@ function waveformPeaksCoverRange(
   );
 }
 
+function activeIndexesFromChannelMode(
+  channelMode: ChannelMonitorMode,
+  channelCount: number,
+): number[] {
+  const allChannels = Array.from({ length: channelCount }, (_, index) => index);
+  if (channelMode === "all") return allChannels;
+  const indexes = channelMode.startsWith("channels:")
+    ? channelMode
+        .slice("channels:".length)
+        .split(",")
+        .map((value) => Number(value))
+    : [Number(channelMode.slice("channel:".length))];
+  const validIndexes = Array.from(
+    new Set(
+      indexes.filter(
+        (index) => Number.isInteger(index) && index >= 0 && index < channelCount,
+      ),
+    ),
+  ).sort((left, right) => left - right);
+  return validIndexes.length > 0 ? validIndexes : allChannels;
+}
+
+function channelModeFromActiveIndexes(
+  indexes: number[],
+  channelCount: number,
+): ChannelMonitorMode {
+  const validIndexes = Array.from(
+    new Set(
+      indexes.filter(
+        (index) => Number.isInteger(index) && index >= 0 && index < channelCount,
+      ),
+    ),
+  ).sort((left, right) => left - right);
+  if (validIndexes.length === 0 || validIndexes.length === channelCount) return "all";
+  if (validIndexes.length === 1) return `channel:${validIndexes[0]}`;
+  return `channels:${validIndexes.join(",")}`;
+}
+
 function wait(milliseconds: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 }
@@ -168,6 +209,7 @@ export function WaveformCanvas({
   assetId,
   contentKey,
   durationSeconds,
+  channelMode,
   loopCrossfadeDesiredSeconds = 0,
   loopCrossfadeEnabled = false,
   loopCrossfadeSlope = 1,
@@ -190,6 +232,7 @@ export function WaveformCanvas({
   region,
   sampleRate,
   onRegionChange,
+  onChannelModeChange,
 }: WaveformCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const peakDataRef = useRef<WaveformPeakData | null>(null);
@@ -197,6 +240,7 @@ export function WaveformCanvas({
   const viewportRef = useRef<WaveformViewport>(fitViewport(1, 1));
   const loadedAssetIdRef = useRef<string | null>(null);
   const verticalZoomRef = useRef(1);
+  const channelModeRef = useRef<ChannelMonitorMode>(channelMode);
   const activeChannelIndexesRef = useRef<number[]>([]);
   const dragRef = useRef<DragState | null>(null);
   const committedRegionKeyRef = useRef<string | null>(null);
@@ -385,6 +429,15 @@ export function WaveformCanvas({
     redraw();
   }, [activeChannelIndexes, redraw]);
 
+  useEffect(() => {
+    channelModeRef.current = channelMode;
+    const peaks = peakDataRef.current;
+    if (!peaks) return;
+    const channels = activeIndexesFromChannelMode(channelMode, peaks.channels.length);
+    activeChannelIndexesRef.current = channels;
+    setActiveChannelIndexes(channels);
+  }, [channelMode]);
+
   const pointerSeconds = useCallback((event: React.PointerEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
     if (!canvas) return 0;
@@ -508,7 +561,10 @@ export function WaveformCanvas({
     (peaks: WaveformPeakData, options?: { preserveViewport?: boolean }) => {
       peakDataRef.current = peaks;
       loadedAssetIdRef.current = peaks.assetId;
-      const channels = peaks.channels.map((_, index) => index);
+      const channels = activeIndexesFromChannelMode(
+        channelModeRef.current,
+        peaks.channels.length,
+      );
       activeChannelIndexesRef.current = channels;
       setActiveChannelIndexes(channels);
       setChannelCount(peaks.channels.length);
@@ -1151,15 +1207,24 @@ export function WaveformCanvas({
   const channelIndexes = Array.from({ length: channelCount }, (_, index) => index);
   const activeChannelSet = new Set(activeChannelIndexes);
 
-  const updateActiveChannels = useCallback((index: number, additive: boolean) => {
-    setActiveChannelIndexes((current) => {
-      if (!additive) return [index];
-      const next = current.includes(index)
-        ? current.filter((item) => item !== index)
-        : [...current, index].sort((left, right) => left - right);
-      return next.length > 0 ? next : current;
-    });
-  }, []);
+  const updateActiveChannels = useCallback(
+    (index: number, additive: boolean) => {
+      setActiveChannelIndexes((current) => {
+        if (!additive) {
+          const next = [index];
+          onChannelModeChange(channelModeFromActiveIndexes(next, channelCount));
+          return next;
+        }
+        const next = current.includes(index)
+          ? current.filter((item) => item !== index)
+          : [...current, index].sort((left, right) => left - right);
+        const resolved = next.length > 0 ? next : current;
+        onChannelModeChange(channelModeFromActiveIndexes(resolved, channelCount));
+        return resolved;
+      });
+    },
+    [channelCount, onChannelModeChange],
+  );
 
   const selectRegionNote = useCallback(
     (note: RegionNote) => {
@@ -1510,11 +1575,7 @@ export function WaveformCanvas({
             );
             const endSeconds = pointerSeconds(event);
             onRegionChange(
-              normalizeRegion(
-                startSeconds,
-                endSeconds,
-                currentDurationSeconds(),
-              ),
+              normalizeRegion(startSeconds, endSeconds, currentDurationSeconds()),
             );
           }
           drag.currentX = nextX;

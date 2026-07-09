@@ -2,7 +2,7 @@ export type LoopMode = "off" | "file" | "region";
 
 export type PreviewMode = "original" | "processed";
 
-export type ChannelMonitorMode = "all" | `channel:${number}`;
+export type ChannelMonitorMode = "all" | `channel:${number}` | `channels:${string}`;
 
 export type PreviewStatus =
   | "idle"

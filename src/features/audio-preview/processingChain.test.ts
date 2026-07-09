@@ -38,6 +38,19 @@ describe("processing chain", () => {
     expect(canonicalProcessingChain(chain)).toContain('"pitch"');
   });
 
+  it("adds selected channels to the export contract", () => {
+    const chain = createProcessingChain({
+      gainDb: 0,
+      channelMode: "channels:0,2",
+    });
+
+    expect(chain.chainOrder).toEqual(["gain", "channel"]);
+    expect(processingHash(chain)).toBe("processing:channel:0,2");
+    expect(canonicalProcessingChain(chain)).toContain(
+      '"channel":{"enabled":true,"channels":[0,2]}',
+    );
+  });
+
   it("keys full-file analysis by asset content, gain settings, and profile", () => {
     const original = analysisCacheKey("asset-content-a", createGainProcessingChain(0));
     const processed = analysisCacheKey("asset-content-a", createGainProcessingChain(3));

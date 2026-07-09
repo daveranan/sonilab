@@ -294,6 +294,11 @@ export class AudioPreviewService {
       }
 
       this.activeBuffer = buffer;
+      const nextChannelMode = this.validChannelMode(this.processing.channelMode);
+      if (nextChannelMode !== this.processing.channelMode) {
+        this.processing = { ...this.processing, channelMode: nextChannelMode };
+        this.emitProcessing();
+      }
       this.emit({
         status: "ready",
         durationSeconds: buffer.duration,
@@ -1315,40 +1320,63 @@ export class AudioPreviewService {
     destination: AudioNode,
   ): void {
     if (!this.audioContext) return;
-    const sourceChannel = this.channelIndexFromMode(
+    const sourceChannels = this.channelIndexesFromMode(
       this.processing.channelMode,
       buffer.numberOfChannels,
     );
-    if (sourceChannel === null || buffer.numberOfChannels < 2) {
+    if (sourceChannels === null || buffer.numberOfChannels < 2) {
       source.connect(destination);
       return;
     }
     const splitter = this.audioContext.createChannelSplitter(buffer.numberOfChannels);
-    const merger = this.audioContext.createChannelMerger(2);
+    const outputChannels = sourceChannels.length === 1 ? 2 : sourceChannels.length;
+    const merger = this.audioContext.createChannelMerger(outputChannels);
     source.connect(splitter);
-    splitter.connect(merger, sourceChannel, 0);
-    splitter.connect(merger, sourceChannel, 1);
+    sourceChannels.forEach((sourceChannel, outputChannel) => {
+      splitter.connect(merger, sourceChannel, outputChannel);
+      if (sourceChannels.length === 1) splitter.connect(merger, sourceChannel, 1);
+    });
     merger.connect(destination);
   }
 
-  private validChannelMode(channelMode: ProcessingSettings["channelMode"]) {
+  private validChannelMode(
+    channelMode: ProcessingSettings["channelMode"],
+  ): ProcessingSettings["channelMode"] {
     if (channelMode === "all") return channelMode;
-    const sourceChannel = this.channelIndexFromMode(
+    const sourceChannels = this.channelIndexesFromMode(
       channelMode,
       this.activeBuffer?.numberOfChannels ?? Number.MAX_SAFE_INTEGER,
     );
-    return sourceChannel === null ? "all" : channelMode;
+    if (sourceChannels === null || sourceChannels.length === 0) return "all";
+    if (
+      this.activeBuffer &&
+      sourceChannels.length === this.activeBuffer.numberOfChannels
+    ) {
+      return "all";
+    }
+    if (sourceChannels.length === 1) return `channel:${sourceChannels[0]}`;
+    return `channels:${sourceChannels.join(",")}`;
   }
 
-  private channelIndexFromMode(
+  private channelIndexesFromMode(
     channelMode: ProcessingSettings["channelMode"],
     channelCount: number,
-  ): number | null {
+  ): number[] | null {
     if (channelMode === "all") return null;
-    const match = /^channel:(\d+)$/.exec(channelMode);
-    if (!match) return null;
-    const index = Number(match[1]);
-    return Number.isInteger(index) && index >= 0 && index < channelCount ? index : null;
+    const indexes = channelMode.startsWith("channels:")
+      ? channelMode
+          .slice("channels:".length)
+          .split(",")
+          .map((value) => Number(value))
+      : [Number(channelMode.slice("channel:".length))];
+    const validIndexes = Array.from(
+      new Set(
+        indexes.filter(
+          (index) => Number.isInteger(index) && index >= 0 && index < channelCount,
+        ),
+      ),
+    ).sort((left, right) => left - right);
+    return validIndexes.length > 0 ? validIndexes : null;
   }
 
   private createMockBuffer(context: AudioContext, assetId: string): AudioBuffer {

@@ -12,6 +12,7 @@ import {
   processingHash,
 } from "./processingChain";
 import type {
+  ChannelMonitorMode,
   EqualizerSettings,
   PreviewFileResolution,
   WaveformPeakData,
@@ -149,6 +150,7 @@ type PluginStartDrag = (
 type NativeFileDragFallback = (filePaths: string[]) => Promise<NativeFileDragResponse>;
 type ExportProcessingInput = {
   gainDb: number;
+  channelMode?: ChannelMonitorMode;
   eq?: EqualizerSettings;
   pitchSemitones?: number;
 };
@@ -196,6 +198,7 @@ function cachedPreparedDragFile(
 function createExportProcessingChain(input: ExportProcessingInput) {
   return createProcessingChain({
     gainDb: input.gainDb,
+    channelMode: input.channelMode,
     eq: input.eq,
     pitchSemitones: input.pitchSemitones,
   });
@@ -514,6 +517,7 @@ export async function queueGainExportJob(input: {
   filenamePattern?: string;
   region: WaveformRegion | null;
   gainDb: number;
+  channelMode?: ChannelMonitorMode;
   eq?: EqualizerSettings;
   pitchSemitones?: number;
 }): Promise<ExportJobSnapshot | null> {
@@ -544,6 +548,7 @@ export async function queueGainExportJobs(input: {
   scope: "full" | "region";
   region: WaveformRegion | null;
   gainDb: number;
+  channelMode?: ChannelMonitorMode;
   eq?: EqualizerSettings;
   pitchSemitones?: number;
   loopCrossfadeSeconds?: number | null;
@@ -615,6 +620,7 @@ export async function prepareRegionDragFile(input: {
   format: string;
   region: WaveformRegion;
   gainDb: number;
+  channelMode?: ChannelMonitorMode;
   eq?: EqualizerSettings;
   pitchSemitones?: number;
   loopCrossfadeSeconds?: number | null;
@@ -658,6 +664,7 @@ export async function prepareAssetDragFile(input: {
   format: string;
   region?: WaveformRegion | null;
   gainDb: number;
+  channelMode?: ChannelMonitorMode;
   eq?: EqualizerSettings;
   pitchSemitones?: number;
   regionFadeGapSeconds?: number | null;
@@ -838,6 +845,7 @@ export async function startRegionFileDrag(input: {
   format: string;
   region: WaveformRegion;
   gainDb: number;
+  channelMode?: ChannelMonitorMode;
   eq?: EqualizerSettings;
   pitchSemitones?: number;
   loopCrossfadeSeconds?: number | null;
@@ -863,6 +871,7 @@ export async function startAssetFileDrag(input: {
   format: string;
   region?: WaveformRegion | null;
   gainDb: number;
+  channelMode?: ChannelMonitorMode;
   eq?: EqualizerSettings;
   pitchSemitones?: number;
   formatSettings?: ExportFormatSettings;
@@ -879,6 +888,7 @@ export async function startAssetFilesDrag(input: {
   assets: { assetId: string; displayName?: string }[];
   format: string;
   gainDb: number;
+  channelMode?: ChannelMonitorMode;
   eq?: EqualizerSettings;
   pitchSemitones?: number;
   formatSettings?: ExportFormatSettings;
@@ -893,6 +903,7 @@ export async function startAssetFilesDrag(input: {
       format: input.format,
       formatSettings: input.formatSettings,
       gainDb: input.gainDb,
+      channelMode: input.channelMode,
       eq: input.eq,
       pitchSemitones: input.pitchSemitones,
       region: null,
