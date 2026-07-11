@@ -35,6 +35,7 @@ type BrowseRowProps = {
     row: Extract<BrowseRowModel, { kind: "asset" }>,
     pointer: { clientX: number; clientY: number },
   ) => void;
+  preferInternalAssetDrag?: boolean;
   onInternalDragStart?: (event: React.DragEvent, row: BrowseRowModel) => void;
   onAddToCollection?: (row: BrowseRowModel) => void;
   onOpenInExplorer?: (row: BrowseRowModel) => void;
@@ -55,6 +56,15 @@ function DurationValue({ value }: { value: number | null }) {
 
 function db(value: number | null): string {
   return value === null ? "..." : `${value.toFixed(1)}`;
+}
+
+function pointerIsOutsideApp(clientX: number, clientY: number): boolean {
+  return (
+    clientX <= 0 ||
+    clientY <= 0 ||
+    clientX >= window.innerWidth - 1 ||
+    clientY >= window.innerHeight - 1
+  );
 }
 
 const licenseDescriptions: Record<string, string> = {
@@ -129,6 +139,7 @@ function BrowseRowComponent({
   onAssetFileDragRequest,
   onDeleteRow,
   onGoToFolder,
+  preferInternalAssetDrag = false,
   onInternalDragStart,
   onOpenInExplorer,
 }: BrowseRowProps) {
@@ -136,6 +147,7 @@ function BrowseRowComponent({
     x: number;
     y: number;
     started: boolean;
+    exportStarted: boolean;
     suppressClick: boolean;
   } | null>(null);
   const isFolder = row.kind === "folder";
@@ -264,12 +276,13 @@ function BrowseRowComponent({
         active && !selected && "bg-muted text-foreground",
       )}
       data-row-id={row.id}
-      draggable
+      draggable={!preferInternalAssetDrag}
       onDragStart={(event) => {
         if (
           shouldStartAssetFileExportDrag({
             rowKind: row.kind,
-            hasFileDragHandler: Boolean(onAssetFileDragRequest),
+            hasFileDragHandler:
+              Boolean(onAssetFileDragRequest) && !preferInternalAssetDrag,
           }) &&
           row.kind === "asset" &&
           onAssetFileDragRequest
@@ -279,6 +292,7 @@ function BrowseRowComponent({
             x: event.clientX,
             y: event.clientY,
             started: true,
+            exportStarted: true,
             suppressClick: true,
           };
           onAssetFileDragRequest(row, {
@@ -298,25 +312,77 @@ function BrowseRowComponent({
       }}
       onPointerDown={(event) => {
         if (event.button !== 0 || row.kind !== "asset") return;
+        if (preferInternalAssetDrag) {
+          event.currentTarget.setPointerCapture(event.pointerId);
+        }
         fileDragRef.current = {
           x: event.clientX,
           y: event.clientY,
           started: false,
+          exportStarted: false,
           suppressClick: false,
         };
       }}
       onPointerMove={(event) => {
         if (!fileDragRef.current || row.kind !== "asset") return;
-        if (
+        const distance =
           Math.hypot(
             event.clientX - fileDragRef.current.x,
             event.clientY - fileDragRef.current.y,
-          ) >= 12
-        ) {
+          );
+        if (distance >= 6) {
           fileDragRef.current.suppressClick = true;
+          if (preferInternalAssetDrag && !fileDragRef.current.started) {
+            fileDragRef.current.started = true;
+            window.dispatchEvent(
+              new CustomEvent("sonilabs:assembly-row-drag-start", {
+                detail: { asset: row, x: event.clientX, y: event.clientY },
+              }),
+            );
+          }
+        }
+        if (preferInternalAssetDrag && fileDragRef.current.started) {
+          if (
+            !fileDragRef.current.exportStarted &&
+            pointerIsOutsideApp(event.clientX, event.clientY) &&
+            onAssetFileDragRequest
+          ) {
+            fileDragRef.current.exportStarted = true;
+            window.dispatchEvent(
+              new CustomEvent("sonilabs:assembly-row-drag-cancel"),
+            );
+            if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+              event.currentTarget.releasePointerCapture(event.pointerId);
+            }
+            onAssetFileDragRequest(row, {
+              clientX: event.clientX,
+              clientY: event.clientY,
+            });
+            return;
+          }
+          if (fileDragRef.current.exportStarted) return;
+          window.dispatchEvent(
+            new CustomEvent("sonilabs:assembly-row-drag-move", {
+              detail: { x: event.clientX, y: event.clientY },
+            }),
+          );
         }
       }}
-      onPointerUp={() => {
+      onPointerUp={(event) => {
+        if (
+          preferInternalAssetDrag &&
+          fileDragRef.current?.started &&
+          !fileDragRef.current.exportStarted
+        ) {
+          window.dispatchEvent(
+            new CustomEvent("sonilabs:assembly-row-drag-end", {
+              detail: { x: event.clientX, y: event.clientY },
+            }),
+          );
+          if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+            event.currentTarget.releasePointerCapture(event.pointerId);
+          }
+        }
         if (!fileDragRef.current?.suppressClick) fileDragRef.current = null;
       }}
       role="row"

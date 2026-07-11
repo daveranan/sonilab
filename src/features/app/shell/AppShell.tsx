@@ -23,6 +23,8 @@ import {
   type AppUpdateAvailability,
 } from "@/features/audio-preview/commands";
 import { audioPreviewService } from "@/features/audio-preview/previewService";
+import { AssemblerPanel } from "@/features/assembler/AssemblerPanel";
+import type { WaveformRegion } from "@/features/audio-preview/types";
 import type {
   BrowseRow,
   LazyMetadataResponse,
@@ -54,6 +56,7 @@ import {
   deleteCollection,
   loadActivity,
   loadCollections,
+  moveCollection,
   recordActivity,
   removeAssetsFromCollection,
   renameCollection,
@@ -328,6 +331,62 @@ function deleteCollectionFromTree(
         ? deleteCollectionFromTree(node.children, id)
         : node.children,
     }));
+}
+
+function detachCollectionFromTree(
+  nodes: CollectionNode[],
+  id: string,
+): { nodes: CollectionNode[]; detached: CollectionNode | null } {
+  let detached: CollectionNode | null = null;
+  const next = nodes.flatMap((node) => {
+    if (node.id === id) {
+      detached = { ...node, parentId: null };
+      return [];
+    }
+    const childResult = detachCollectionFromTree(node.children ?? [], id);
+    if (childResult.detached) detached = childResult.detached;
+    return [{ ...node, children: childResult.nodes }];
+  });
+  return { nodes: next, detached };
+}
+
+function moveCollectionInTree(
+  nodes: CollectionNode[],
+  id: string,
+  parentId: string | null,
+  targetId?: string,
+  position: "before" | "after" = "after",
+): CollectionNode[] {
+  const { nodes: withoutSource, detached } = detachCollectionFromTree(nodes, id);
+  if (!detached) return nodes;
+  const moved = { ...detached, parentId };
+  const insert = (siblings: CollectionNode[]) => {
+    const next = [...siblings];
+    const targetIndex = targetId
+      ? next.findIndex((node) => node.id === targetId)
+      : -1;
+    next.splice(
+      targetIndex < 0 ? next.length : targetIndex + (position === "after" ? 1 : 0),
+      0,
+      moved,
+    );
+    return next;
+  };
+  if (!parentId) return insert(withoutSource);
+  const addToParent = (siblings: CollectionNode[]): CollectionNode[] =>
+    siblings.map((node) =>
+      node.id === parentId
+        ? { ...node, children: insert(node.children ?? []) }
+        : { ...node, children: addToParent(node.children ?? []) },
+    );
+  return addToParent(withoutSource);
+}
+
+function collectionSiblings(
+  nodes: CollectionNode[],
+  parentId: string | null,
+): CollectionNode[] {
+  return parentId ? findCollectionNode(nodes, parentId)?.children ?? [] : nodes;
 }
 
 function findCollectionNode(
@@ -692,6 +751,17 @@ function sortTagNodes(nodes: LibraryNode[]): LibraryNode[] {
     }));
 }
 
+function withAggregateItemCounts(node: LibraryNode): LibraryNode {
+  const children = node.children?.map(withAggregateItemCounts) ?? [];
+  return {
+    ...node,
+    children,
+    itemCount:
+      node.itemCount ??
+      children.reduce((total, child) => total + (child.itemCount ?? 0), 0),
+  };
+}
+
 function descendantTagLabels(node: LibraryNode): string[] {
   if (node.kind === "query" && node.queryTag) return [node.queryTag];
   if (node.kind === "query" && node.label) return [node.label];
@@ -767,12 +837,13 @@ function buildLocalTagTree(rows: TagSummaryRow[]): LibraryNode | null {
       kind: "query",
       queryTag: tag,
       queryText: `tag:${quoteSearchFilterValue(tag)}`,
+      itemCount: row.count,
       children: [],
     });
   }
 
   tagRoot.children = sortTagNodes(tagRoot.children ?? []).map(attachTagCategoryQueries);
-  return tagRoot.children.length > 0 ? tagRoot : null;
+  return tagRoot.children.length > 0 ? withAggregateItemCounts(tagRoot) : null;
 }
 
 function buildUserTagTree(rows: TagSummaryRow[]): LibraryNode | null {
@@ -797,6 +868,7 @@ function buildUserTagTree(rows: TagSummaryRow[]): LibraryNode | null {
       kind: "query",
       queryTag: tag,
       queryText: `usertag:${quoteSearchFilterValue(tag)}`,
+      itemCount: row.count,
       children: [],
     });
   }
@@ -804,7 +876,7 @@ function buildUserTagTree(rows: TagSummaryRow[]): LibraryNode | null {
   tagRoot.children = sortTagNodes(tagRoot.children ?? []).map(
     attachUserTagCategoryQueries,
   );
-  return tagRoot.children.length > 0 ? tagRoot : null;
+  return tagRoot.children.length > 0 ? withAggregateItemCounts(tagRoot) : null;
 }
 
 function ensureUserCategory(
@@ -850,12 +922,12 @@ function buildTagTree(rows: TagSummaryRow[]): LibraryNode | null {
     Boolean(node),
   );
   if (children.length === 0) return null;
-  return {
+  return withAggregateItemCounts({
     id: "all-tags",
     label: "Tags",
     kind: "tagRoot",
     children,
-  };
+  });
 }
 
 async function loadTagSummary(): Promise<TagSummaryRow[]> {
@@ -938,6 +1010,10 @@ const initialTabs: AppViewTab[] = [
 ];
 const shellSessionStorageKey = "sonilabs.appShellSession.v2";
 const enabledLocalSourcesStorageKey = "sonilabs.enabledLocalSources.v1";
+const assemblerWidthStorageKey = "sonilabs.assembler.width.v1";
+const defaultAssemblerWidth = 560;
+const minAssemblerWidth = 360;
+const maxAssemblerWidth = 980;
 const defaultLibraryExpandedIds = [
   "libraries-local",
   "local-main",
@@ -956,6 +1032,22 @@ type StoredShellSession = {
   sidebarWidth?: number;
   tabs?: AppViewTab[];
 };
+
+function clampAssemblerWidth(width: number): number {
+  return Math.max(minAssemblerWidth, Math.min(maxAssemblerWidth, width));
+}
+
+function readStoredAssemblerWidth(): number {
+  try {
+    const raw = window.localStorage.getItem(assemblerWidthStorageKey);
+    const width = raw ? Number(raw) : defaultAssemblerWidth;
+    return Number.isFinite(width)
+      ? clampAssemblerWidth(width)
+      : defaultAssemblerWidth;
+  } catch {
+    return defaultAssemblerWidth;
+  }
+}
 
 function readStoredShellSession(): StoredShellSession {
   try {
@@ -1029,12 +1121,16 @@ function applyEnabledLocalSources(
     return { kind: "sources", sourceIds: enabledSourceIds };
   }
   if (scope.kind === "source") {
-    return enabledSourceIds.includes(scope.sourceId) ? scope : { kind: "sources", sourceIds: [] };
+    return enabledSourceIds.includes(scope.sourceId)
+      ? scope
+      : { kind: "sources", sourceIds: [] };
   }
   if (scope.kind === "sources") {
     return {
       kind: "sources",
-      sourceIds: scope.sourceIds.filter((sourceId) => enabledSourceIds.includes(sourceId)),
+      sourceIds: scope.sourceIds.filter((sourceId) =>
+        enabledSourceIds.includes(sourceId),
+      ),
     };
   }
   return scope;
@@ -1044,8 +1140,7 @@ function shouldPauseLiveBrowse(query: SearchQuery): boolean {
   if (query.filters.length > 0) return false;
   const positiveTerms = query.text.filter((term) => !term.startsWith("-"));
   return (
-    positiveTerms.length > 0 &&
-    positiveTerms.every((term) => term.trim().length < 2)
+    positiveTerms.length > 0 && positiveTerms.every((term) => term.trim().length < 2)
   );
 }
 
@@ -1097,6 +1192,24 @@ function AppShellContent() {
   const [restoredActiveRowId] = useState(storedShellSession.activeRowId ?? null);
   const restoredActiveRowConsumedRef = useRef(false);
   const summaryOpen = modalManager.isOpen("file-summary");
+  const [assemblerOpen, setAssemblerOpen] = useState(false);
+  const [assemblerWidth, setAssemblerWidth] = useState(readStoredAssemblerWidth);
+
+  useEffect(() => {
+    const openAssemblerProject = () => setAssemblerOpen(true);
+    window.addEventListener("sonilabs:assembly-project-open", openAssemblerProject);
+    return () =>
+      window.removeEventListener(
+        "sonilabs:assembly-project-open",
+        openAssemblerProject,
+      );
+  }, []);
+  const toggleAssembler = useCallback(() => {
+    setAssemblerOpen((open) => {
+      if (!open) modalManager.close("file-summary");
+      return !open;
+    });
+  }, [modalManager]);
   const [previewedRowIds, setPreviewedRowIds] = useState(() => new Set<string>());
   const [previewedActivity, setPreviewedActivity] = useState<ActivityRow[]>([]);
   const [libraryNodes, setLibraryNodes] = useState(libraries);
@@ -1119,6 +1232,36 @@ function AppShellContent() {
   const [activity, setActivity] = useState(initialActivity);
   const [onboardingDismissed, setOnboardingDismissed] = useState(
     () => window.localStorage.getItem("sonilabs.localOnboardingDismissed") === "1",
+  );
+
+  useEffect(() => {
+    window.localStorage.setItem(assemblerWidthStorageKey, String(assemblerWidth));
+  }, [assemblerWidth]);
+
+  const beginAssemblerResize = useCallback(
+    (event: React.PointerEvent<HTMLElement>) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const startClientX = event.clientX;
+      const startWidth = assemblerWidth;
+
+      const handlePointerMove = (moveEvent: PointerEvent) => {
+        const delta = startClientX - moveEvent.clientX;
+        setAssemblerWidth(clampAssemblerWidth(startWidth + delta));
+      };
+      const handlePointerUp = () => {
+        window.removeEventListener("pointermove", handlePointerMove, true);
+        window.removeEventListener("pointerup", handlePointerUp, true);
+        document.body.style.cursor = "";
+        document.body.style.userSelect = "";
+      };
+
+      document.body.style.cursor = "col-resize";
+      document.body.style.userSelect = "none";
+      window.addEventListener("pointermove", handlePointerMove, true);
+      window.addEventListener("pointerup", handlePointerUp, true);
+    },
+    [assemblerWidth],
   );
   const inputRef = useRef<HTMLInputElement>(null);
   const collectionPickerFocusRef = useRef<HTMLButtonElement>(null);
@@ -1267,11 +1410,20 @@ function AppShellContent() {
     };
   }, []);
 
+  useEffect(() => {
+    const handler = (event: Event) => {
+      internalDragActiveRef.current = Boolean(
+        (event as CustomEvent<{ active: boolean }>).detail?.active,
+      );
+      if (internalDragActiveRef.current) setDropOverlayVisible(false);
+    };
+    window.addEventListener("sonilabs:assembly-internal-drag-active", handler);
+    return () =>
+      window.removeEventListener("sonilabs:assembly-internal-drag-active", handler);
+  }, []);
+
   const parsed = useMemo(() => {
-    const next = parseSearchGrammar(
-      searchText,
-      filteredSourceScope,
-    );
+    const next = parseSearchGrammar(searchText, filteredSourceScope);
     return {
       ...next,
       query: {
@@ -1567,7 +1719,6 @@ function AppShellContent() {
   }, [beginImportLocalFolders]);
 
   useEffect(() => {
-    if (hasTauri()) return;
     const showOverlay = (event: DragEvent) => {
       if (
         !shouldShowImportDropOverlay({
@@ -1586,17 +1737,32 @@ function AppShellContent() {
       internalDragActiveRef.current = false;
       setDropOverlayVisible(false);
     };
+    const handleHtmlDrop = (event: DragEvent) => {
+      const shouldImport = shouldShowImportDropOverlay({
+        exportDragActive: exportDragActiveRef.current,
+        internalDragActive: internalDragActiveRef.current,
+        dataTransferTypes: event.dataTransfer?.types,
+      });
+      if (shouldImport) {
+        event.preventDefault();
+        const paths = [...(event.dataTransfer?.files ?? [])]
+          .map((file) => (file as File & { path?: string }).path)
+          .filter((path): path is string => Boolean(path));
+        if (paths.length) beginImportLocalFolders(paths);
+      }
+      hideOverlay();
+    };
     window.addEventListener("dragenter", showOverlay);
     window.addEventListener("dragover", showOverlay);
     window.addEventListener("dragleave", hideOverlay);
-    window.addEventListener("drop", hideOverlay);
+    window.addEventListener("drop", handleHtmlDrop);
     return () => {
       window.removeEventListener("dragenter", showOverlay);
       window.removeEventListener("dragover", showOverlay);
       window.removeEventListener("dragleave", hideOverlay);
-      window.removeEventListener("drop", hideOverlay);
+      window.removeEventListener("drop", handleHtmlDrop);
     };
-  }, []);
+  }, [beginImportLocalFolders]);
 
   useEffect(() => {
     if (!hasTauri()) return;
@@ -2360,6 +2526,52 @@ function AppShellContent() {
     [refreshCollections],
   );
 
+  const handleMoveCollection = useCallback(
+    (
+      collectionId: string,
+      parentId: string | null,
+      targetId?: string,
+      position: "before" | "after" = "after",
+    ) => {
+      const source = findCollectionNode(collections, collectionId);
+      const target = parentId ? findCollectionNode(collections, parentId) : null;
+      if (
+        !source ||
+        source.system ||
+        target?.system ||
+        (source.parentId === parentId && !targetId) ||
+        (target && findCollectionNode(source.children ?? [], target.id))
+      )
+        return;
+      const nextCollections = moveCollectionInTree(
+        collections,
+        collectionId,
+        parentId,
+        targetId,
+        position,
+      );
+      setCollections(nextCollections);
+      if (parentId) {
+        setCollectionExpandedIds((current) =>
+          current.includes(parentId) ? current : [...current, parentId],
+        );
+      }
+      const affectedParentIds = new Set<string | null>([
+        source.parentId ?? null,
+        parentId,
+      ]);
+      const writes = [...affectedParentIds].flatMap((affectedParentId) =>
+        collectionSiblings(nextCollections, affectedParentId)
+          .filter((node) => !node.system)
+          .map((node, index) => moveCollection(node.id, affectedParentId, index * 10)),
+      );
+      void Promise.all(writes).then(() => {
+        if (hasTauri()) refreshCollections();
+      });
+    },
+    [collections, refreshCollections],
+  );
+
   const handleDeleteCollection = useCallback(
     (node: CollectionNode) => {
       if (node.system) return;
@@ -2793,9 +3005,15 @@ function AppShellContent() {
                 )
                 .map((asset) => asset.id)
             : [row.id];
+        event.dataTransfer.setData(sonilabsAssetDragType, JSON.stringify(assetIds));
         event.dataTransfer.setData(
-          sonilabsAssetDragType,
-          JSON.stringify(assetIds),
+          "text/plain",
+          JSON.stringify({ type: "sonilabs-assets", assetIds }),
+        );
+        window.dispatchEvent(
+          new CustomEvent("sonilabs:assembly-asset-drag-start", {
+            detail: { assetIds },
+          }),
         );
       } else {
         event.dataTransfer.setData(sonilabsFolderDragType, row.id);
@@ -2804,6 +3022,43 @@ function AppShellContent() {
       event.dataTransfer.effectAllowed = "copy";
     },
     [rows, selectedRowIds],
+  );
+
+  const focusAssemblerClipSource = useCallback(
+    (
+      assetId: string,
+      region: WaveformRegion | null,
+      sourceAsset?: Extract<BrowseRow, { kind: "asset" }>,
+    ) => {
+      const index = rows.findIndex(
+        (row) => row.kind === "asset" && row.id === assetId,
+      );
+      if (index >= 0) {
+        dispatch({ type: "single", rowId: assetId, intent: "programmatic" });
+        window.dispatchEvent(
+          new CustomEvent("sonilabs:browse-scroll-to-index", {
+            detail: { index },
+          }),
+        );
+      }
+      window.dispatchEvent(
+        new CustomEvent("sonilabs:preview-intent", {
+          detail: { kind: "start-preview", rowId: assetId, asset: sourceAsset },
+        }),
+      );
+      window.requestAnimationFrame(() => {
+        window.dispatchEvent(
+          new CustomEvent("sonilabs:waveform-intent", {
+            detail: {
+              kind: "set-region",
+              assetId,
+              region,
+            },
+          }),
+        );
+      });
+    },
+    [dispatch, rows],
   );
 
   const handleSortChange = useCallback(
@@ -2890,6 +3145,7 @@ function AppShellContent() {
 
   useEffect(() => {
     const handleWindowKeyDown = (event: KeyboardEvent) => {
+      if (assemblerOpen) return;
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f") {
         event.preventDefault();
         event.stopPropagation();
@@ -2918,10 +3174,11 @@ function AppShellContent() {
     };
     window.addEventListener("keydown", handleWindowKeyDown, true);
     return () => window.removeEventListener("keydown", handleWindowKeyDown, true);
-  }, [moveBrowseSelection, openCollectionPickerForCurrentSelection]);
+  }, [assemblerOpen, moveBrowseSelection, openCollectionPickerForCurrentSelection]);
 
   const handleKeyDown = useCallback(
     (event: React.KeyboardEvent) => {
+      if (assemblerOpen) return;
       const command = commandFromKeyboardEvent(event.nativeEvent);
       if (!command) return;
       event.preventDefault();
@@ -3086,6 +3343,7 @@ function AppShellContent() {
     [
       activeRowId,
       activeTabId,
+      assemblerOpen,
       activateViewTab,
       dispatch,
       handleCloseTab,
@@ -3117,7 +3375,7 @@ function AppShellContent() {
       onKeyDown={handleKeyDown}
       style={{
         gridTemplateColumns: `${sidebarWidth}px minmax(0,1fr) ${
-          summaryOpen ? "308px" : "0px"
+          assemblerOpen ? `${assemblerWidth}px` : summaryOpen ? "308px" : "0px"
         }`,
       }}
     >
@@ -3139,6 +3397,7 @@ function AppShellContent() {
         onDeleteCollection={handleDeleteCollection}
         onDropAssetsIntoCollection={handleDropAssetsIntoCollection}
         onDropFolderIntoCollection={handleDropFolderIntoCollection}
+        onMoveCollection={handleMoveCollection}
         onDeleteLibraryNode={handleDeleteLibraryNode}
         onCheckOnlyLibraryNode={handleCheckOnlyLibraryNode}
         onOpenCollection={handleOpenCollection}
@@ -3185,10 +3444,13 @@ function AppShellContent() {
           target={collectionPickerTarget}
         />
       ) : null}
-      <section className="col-start-2 row-start-1 flex min-w-0 flex-col overflow-hidden">
+      <section className="col-start-2 row-start-1 flex min-w-0 flex-col overflow-visible">
         <div
-          className="flex min-h-[52px] items-start gap-3 border-b border-border bg-panel px-3 py-2"
+          className="relative z-50 flex min-h-[52px] shrink-0 items-start gap-3 border-b border-border bg-panel px-3 py-2"
           onPointerDown={startHeaderDrag}
+          style={{
+            width: assemblerOpen ? `calc(100% + ${assemblerWidth}px)` : "100%",
+          }}
         >
           <TopSearchBar
             activeFilterChips={parsed.query.activeFilterChips}
@@ -3222,12 +3484,13 @@ function AppShellContent() {
             <WindowControls />
           </div>
         </div>
-        <ViewTabs
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+          <ViewTabs
           activeTabId={activeTabId}
           onActivate={activateViewTab}
           onClose={handleCloseTab}
           tabs={tabModels}
-        />
+          />
         {activeTab?.breadcrumbSegments.length ? (
           <Breadcrumbs
             onNavigate={handleBreadcrumbNavigate}
@@ -3267,6 +3530,7 @@ function AppShellContent() {
           onOpenFolder={handleOpenFolderRow}
           onSortChange={handleSortChange}
           onVisibleRowsChange={handleVisibleRows}
+          preferInternalAssetDrag={assemblerOpen}
           previewedRowIds={previewedRowIds}
           queryText={searchText}
           rows={rows}
@@ -3276,8 +3540,16 @@ function AppShellContent() {
         <span aria-live="polite" className="sr-only">
           {activeRowId ? `Active row ${activeRowId}` : "No active row"}
         </span>
+        </div>
       </section>
-      {summaryOpen ? (
+      {assemblerOpen ? (
+        <AssemblerPanel
+          onFocusSource={focusAssemblerClipSource}
+          onClose={() => setAssemblerOpen(false)}
+          onResizeStart={beginAssemblerResize}
+          rows={rows}
+        />
+      ) : summaryOpen ? (
         <RightInspector
           activeAsset={activeAsset}
           onMetadataChanged={refreshTagTree}
@@ -3285,7 +3557,9 @@ function AppShellContent() {
         />
       ) : null}
       <BottomDockPlaceholder
-        isSummaryOpen={summaryOpen}
+        isAssemblerOpen={assemblerOpen}
+        isSummaryOpen={summaryOpen && !assemblerOpen}
+        onToggleAssembler={toggleAssembler}
         onExportsChanged={refreshActivity}
         onPlayedAsset={handlePlayedAsset}
         onPreviewedRow={markPreviewedRow}
@@ -3393,7 +3667,10 @@ function AppShellContent() {
         </div>
       ) : null}
       {startupUpdate?.available ? (
-        <section className="fixed bottom-5 right-5 z-50 w-[min(360px,calc(100vw-32px))] rounded-md border border-border bg-panel p-3 shadow-2xl">
+        <section
+          className="fixed right-5 z-[120] w-[min(360px,calc(100vw-32px))] rounded-md border border-border bg-panel p-3 shadow-2xl"
+          style={{ bottom: assemblerOpen ? 118 : 20 }}
+        >
           <div className="mb-1 text-[13px] font-semibold text-foreground">
             Update {startupUpdate.version} available
           </div>

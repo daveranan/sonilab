@@ -55,7 +55,10 @@ type WaveformCanvasProps = {
   sampleRate?: number | null;
   onRegionCommit: (region: WaveformRegion) => void;
   onRegionChange: (region: WaveformRegion | null) => void;
-  onRegionFileDragRequest: (region: WaveformRegion) => void;
+  onRegionFileDragRequest: (
+    region: WaveformRegion,
+    pointer: { clientX: number; clientY: number },
+  ) => void;
   onMeterChange?: (meter: OutputMeterSnapshot) => void;
   onChannelModeChange: (channelMode: ChannelMonitorMode) => void;
 };
@@ -1561,7 +1564,10 @@ export function WaveformCanvas({
               if (event.currentTarget.hasPointerCapture(event.pointerId)) {
                 event.currentTarget.releasePointerCapture(event.pointerId);
               }
-              onRegionFileDragRequest(drag.regionAtStart);
+              onRegionFileDragRequest(drag.regionAtStart, {
+                clientX: event.clientX,
+                clientY: event.clientY,
+              });
             }
           } else if (drag.mode === "seek") {
             audioPreviewService.seek(

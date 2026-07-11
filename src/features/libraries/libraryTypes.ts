@@ -16,6 +16,7 @@ export type LibraryNode = {
   metadataFile?: string | null;
   queryText?: string;
   queryTag?: string;
+  itemCount?: number;
   children?: LibraryNode[];
 };
 
@@ -25,6 +26,7 @@ export type CollectionNode = {
   parentId?: string | null;
   system?: boolean;
   updatedAt?: string;
+  itemCount?: number;
   children?: CollectionNode[];
 };
 

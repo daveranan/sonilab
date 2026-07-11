@@ -9,13 +9,17 @@ import {
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
 import {
+  dataTransferHasType,
   sonilabsAssetDragType,
+  sonilabsCollectionDragType,
   sonilabsFolderDragType,
 } from "@/features/dragRouting";
 import { cn } from "@/lib/utils";
 
 import type { CollectionNode } from "./libraryTypes";
 import { toggleExpandedNodeIds } from "./treeExpansion";
+
+type CollectionDropPosition = "before" | "inside" | "after";
 
 function findCollectionPath(
   nodes: CollectionNode[],
@@ -44,6 +48,7 @@ function CollectionTreeNode({
   onDeleteCollection,
   onDropAssets,
   onDropFolderRef,
+  onMoveCollection,
   editingId,
   startRenaming,
   finishRenaming,
@@ -59,6 +64,12 @@ function CollectionTreeNode({
   onDeleteCollection?: (node: CollectionNode) => void;
   onDropAssets?: (node: CollectionNode, assetIds: string[]) => void;
   onDropFolderRef?: (node: CollectionNode, folderId: string) => void;
+  onMoveCollection?: (
+    collectionId: string,
+    parentId: string | null,
+    targetId?: string,
+    position?: "before" | "after",
+  ) => void;
   editingId: string | null;
   startRenaming: (node: CollectionNode) => void;
   finishRenaming: () => void;
@@ -69,6 +80,8 @@ function CollectionTreeNode({
   const isActive = activeNodeId === node.id;
   const canDelete = !node.system;
   const isEditing = editingId === node.id;
+  const [collectionDropPosition, setCollectionDropPosition] =
+    useState<CollectionDropPosition | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -97,8 +110,13 @@ function CollectionTreeNode({
               "flex h-8 w-full cursor-default items-center gap-1.5 truncate rounded-sm px-2 text-left text-[13px] text-muted-foreground outline-none hover:bg-muted hover:text-foreground focus-visible:bg-muted focus-visible:text-foreground",
               isActive &&
                 "bg-zinc-200 text-zinc-950 hover:bg-zinc-200 [&_*]:text-zinc-950",
+              collectionDropPosition === "inside" &&
+                "bg-cyan-400/15 ring-1 ring-inset ring-cyan-300/60",
+              collectionDropPosition === "before" && "border-t border-cyan-300",
+              collectionDropPosition === "after" && "border-b border-cyan-300",
             )}
             data-collection-id={node.id}
+            draggable={!node.system && !isEditing}
             onClick={() => {
               if (!isEditing) onOpenCollection?.(node);
             }}
@@ -109,17 +127,75 @@ function CollectionTreeNode({
             }}
             onDragOver={(event) => {
               if (
-                event.dataTransfer.types.includes(sonilabsAssetDragType) ||
-                event.dataTransfer.types.includes(sonilabsFolderDragType)
+                dataTransferHasType(event.dataTransfer.types, sonilabsCollectionDragType)
+              ) {
+                event.preventDefault();
+                event.stopPropagation();
+                const bounds = event.currentTarget.getBoundingClientRect();
+                const ratio = (event.clientY - bounds.top) / bounds.height;
+                const position: CollectionDropPosition =
+                  ratio < 0.25 ? "before" : ratio > 0.75 ? "after" : "inside";
+                const accepted = position !== "inside" || !node.system;
+                event.dataTransfer.dropEffect = accepted ? "move" : "none";
+                setCollectionDropPosition(accepted ? position : null);
+                return;
+              }
+              if (
+                dataTransferHasType(event.dataTransfer.types, sonilabsAssetDragType) ||
+                dataTransferHasType(event.dataTransfer.types, sonilabsFolderDragType)
               ) {
                 event.preventDefault();
                 event.dataTransfer.dropEffect = "copy";
               }
             }}
+            onDragLeave={(event) => {
+              if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                setCollectionDropPosition(null);
+              }
+            }}
+            onDragStart={(event) => {
+              event.stopPropagation();
+              event.dataTransfer.setData(sonilabsCollectionDragType, node.id);
+              event.dataTransfer.setData("text/plain", node.id);
+              event.dataTransfer.effectAllowed = "move";
+              window.dispatchEvent(
+                new CustomEvent("sonilabs:assembly-internal-drag-active", {
+                  detail: { active: true },
+                }),
+              );
+            }}
+            onDragEnd={() => {
+              setCollectionDropPosition(null);
+              window.dispatchEvent(
+                new CustomEvent("sonilabs:assembly-internal-drag-active", {
+                  detail: { active: false },
+                }),
+              );
+            }}
             onDrop={(event) => {
+              const collectionPayload = event.dataTransfer.getData(
+                sonilabsCollectionDragType,
+              );
               const assetPayload = event.dataTransfer.getData(sonilabsAssetDragType);
               const folderPayload = event.dataTransfer.getData(sonilabsFolderDragType);
-              if (assetPayload) {
+              const dropPosition = collectionDropPosition;
+              setCollectionDropPosition(null);
+              if (collectionPayload) {
+                event.preventDefault();
+                event.stopPropagation();
+                if (collectionPayload !== node.id) {
+                  if (dropPosition === "inside" && !node.system) {
+                    onMoveCollection?.(collectionPayload, node.id);
+                  } else if (dropPosition === "before" || dropPosition === "after") {
+                    onMoveCollection?.(
+                      collectionPayload,
+                      node.parentId ?? null,
+                      node.id,
+                      dropPosition,
+                    );
+                  }
+                }
+              } else if (assetPayload) {
                 event.preventDefault();
                 try {
                   const parsed = JSON.parse(assetPayload) as unknown;
@@ -190,6 +266,9 @@ function CollectionTreeNode({
             ) : (
               <span className="min-w-0 flex-1 truncate text-left">{node.label}</span>
             )}
+            <span className="shrink-0 text-[10px] tabular-nums opacity-60">
+              {node.itemCount ?? 0}
+            </span>
           </div>
         </ContextMenuTrigger>
         <ContextMenuContent>
@@ -231,6 +310,7 @@ function CollectionTreeNode({
               onDeleteCollection={onDeleteCollection}
               onDropAssets={onDropAssets}
               onDropFolderRef={onDropFolderRef}
+              onMoveCollection={onMoveCollection}
               onOpenCollection={onOpenCollection}
               onRenameCollection={onRenameCollection}
               editingId={editingId}
@@ -255,6 +335,7 @@ export function CollectionTree({
   onDeleteCollection,
   onDropAssets,
   onDropFolderRef,
+  onMoveCollection,
   renamingCollectionId,
   onFinishRenamingCollection,
 }: {
@@ -267,6 +348,12 @@ export function CollectionTree({
   onDeleteCollection?: (node: CollectionNode) => void;
   onDropAssets?: (node: CollectionNode, assetIds: string[]) => void;
   onDropFolderRef?: (node: CollectionNode, folderId: string) => void;
+  onMoveCollection?: (
+    collectionId: string,
+    parentId: string | null,
+    targetId?: string,
+    position?: "before" | "after",
+  ) => void;
   renamingCollectionId?: string | null;
   onFinishRenamingCollection?: () => void;
   activeNodeId?: string | null;
@@ -292,7 +379,23 @@ export function CollectionTree({
   }
 
   return (
-    <div role="tree">
+    <div
+      onDragOver={(event) => {
+        if (
+          dataTransferHasType(event.dataTransfer.types, sonilabsCollectionDragType)
+        ) {
+          event.preventDefault();
+          event.dataTransfer.dropEffect = "move";
+        }
+      }}
+      onDrop={(event) => {
+        const collectionId = event.dataTransfer.getData(sonilabsCollectionDragType);
+        if (!collectionId) return;
+        event.preventDefault();
+        onMoveCollection?.(collectionId, null);
+      }}
+      role="tree"
+    >
       {nodes.map((node) => (
         <CollectionTreeNode
           depth={0}
@@ -304,6 +407,7 @@ export function CollectionTree({
           onDeleteCollection={onDeleteCollection}
           onDropAssets={onDropAssets}
           onDropFolderRef={onDropFolderRef}
+          onMoveCollection={onMoveCollection}
           onOpenCollection={onOpenCollection}
           onRenameCollection={onRenameCollection}
           editingId={editingId}

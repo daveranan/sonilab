@@ -1,9 +1,37 @@
 export const sonilabsAssetDragType = "application/x-sonilabs-assets";
 export const sonilabsFolderDragType = "application/x-sonilabs-folder";
+export const sonilabsCollectionDragType = "application/x-sonilabs-collection";
+export const sonilabsAssemblyProjectDragType =
+  "application/x-sonilabs-assembly-project";
+export const sonilabsAssemblyClipDragType =
+  "application/x-sonilabs-assembly-clip";
+export const sonilabsAssemblyTrackDragType =
+  "application/x-sonilabs-assembly-track";
 
 type DragTypeList = {
-  includes(type: string): boolean;
+  contains?: (type: string) => boolean;
+  includes?: (type: string) => boolean;
+  item?: (index: number) => string | null;
+  readonly length?: number;
+  [index: number]: string;
 };
+
+export function dataTransferHasType(
+  types: DragTypeList | null | undefined,
+  type: string,
+): boolean {
+  if (!types) return false;
+  if (typeof types.includes === "function") return types.includes(type);
+  if (typeof types.contains === "function") return types.contains(type);
+  if (typeof types.length === "number") {
+    for (let index = 0; index < types.length; index += 1) {
+      const value =
+        typeof types.item === "function" ? types.item(index) : types[index];
+      if (value === type) return true;
+    }
+  }
+  return false;
+}
 
 export function shouldStartAssetFileExportDrag(input: {
   rowKind: "asset" | "folder";
@@ -16,7 +44,12 @@ export function hasSonilabsInternalDragType(
   types: DragTypeList | null | undefined,
 ): boolean {
   return Boolean(
-    types?.includes(sonilabsAssetDragType) || types?.includes(sonilabsFolderDragType),
+    dataTransferHasType(types, sonilabsAssetDragType) ||
+      dataTransferHasType(types, sonilabsFolderDragType) ||
+      dataTransferHasType(types, sonilabsCollectionDragType) ||
+      dataTransferHasType(types, sonilabsAssemblyProjectDragType) ||
+      dataTransferHasType(types, sonilabsAssemblyClipDragType) ||
+      dataTransferHasType(types, sonilabsAssemblyTrackDragType),
   );
 }
 
@@ -29,5 +62,5 @@ export function shouldShowImportDropOverlay(input: {
   const types = input.dataTransferTypes;
   if (!types) return true;
   if (hasSonilabsInternalDragType(types)) return false;
-  return types.includes("Files");
+  return dataTransferHasType(types, "Files");
 }

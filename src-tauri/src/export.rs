@@ -1073,6 +1073,110 @@ fn prepare_mock_drag_file(
     })
 }
 
+pub fn prepare_assembly_drag_file(
+    temp_root: &Path,
+    resource_dir: Option<&Path>,
+    display_name: &str,
+    wav_bytes: Vec<u8>,
+    format: &str,
+    format_settings_json: &str,
+) -> Result<PreparedRegionDragFile, String> {
+    if wav_bytes.len() < 44 || &wav_bytes[0..4] != b"RIFF" || &wav_bytes[8..12] != b"WAVE" {
+        return Err("assembly render is not a valid WAV file".to_string());
+    }
+    let normalized_format = normalized_export_format(format);
+    let settings = parse_format_settings(&normalized_format, format_settings_json)?;
+    let export_dir = temp_root
+        .join("sonilabs-export-drag")
+        .join(make_id("assembly"));
+    fs::create_dir_all(&export_dir).map_err(|error| error.to_string())?;
+    let file_stem = sanitize_file_stem(display_name);
+    let source_path = export_dir.join(format!("{file_stem}.source.wav"));
+    fs::write(&source_path, wav_bytes).map_err(|error| error.to_string())?;
+
+    let wav_needs_conversion = normalized_format == "wav"
+        && (settings.wav_bit_depth.is_some_and(|depth| depth != 16)
+            || settings.wav_sample_rate.is_some_and(|rate| rate != 48_000));
+    let output_path = if normalized_format == "wav" && !wav_needs_conversion {
+        let output = export_dir.join(format!("{file_stem}.wav"));
+        fs::rename(&source_path, &output).map_err(|error| error.to_string())?;
+        output
+    } else {
+        let output = export_dir.join(format!(
+            "{file_stem}.{}",
+            output_extension(&normalized_format)
+        ));
+        let ffmpeg = resolve_ffmpeg(resource_dir)?;
+        let asset = ExportAssetRecord {
+            source_root_uri: export_dir.to_string_lossy().to_string(),
+            path_or_url: source_path.to_string_lossy().to_string(),
+            name: format!("{file_stem}.wav"),
+            format: Some("wav".to_string()),
+            relative_path: None,
+            license: None,
+            attribution: None,
+            originator: None,
+            source_url: None,
+        };
+        let chain = GainProcessingChain {
+            version: 1,
+            gain: GainStage {
+                enabled: false,
+                gain_db: 0.0,
+                min_db: -24.0,
+                max_db: 24.0,
+            },
+            channel: None,
+            eq: None,
+            pitch: None,
+            chain_order: Vec::new(),
+        };
+        let job = ExportJobRecord {
+            id: make_id("assembly_drag_job"),
+            asset_id: "assembly".to_string(),
+            output_folder: export_dir.to_string_lossy().to_string(),
+            export_scope: "full".to_string(),
+            region_start_seconds: None,
+            region_end_seconds: None,
+            loop_crossfade_seconds: None,
+            loop_crossfade_slope: None,
+            region_fade_gap_seconds: None,
+            region_fade_in_seconds: None,
+            region_fade_in_slope: None,
+            region_fade_out_seconds: None,
+            region_fade_out_slope: None,
+            format: normalized_format.clone(),
+            format_settings_json: format_settings_json.to_string(),
+            processing_json: "{}".to_string(),
+            preserve_folder_structure: false,
+            include_attribution_sidecar: false,
+            overwrite_mode: "replace".to_string(),
+        };
+        let args = build_ffmpeg_args(&ffmpeg, &job, &asset, &chain, &settings, &output)?;
+        let token = CancellationToken::default();
+        let deadline = JobDeadline::new(Duration::from_secs(5 * 60));
+        let result = run_ffmpeg_with_deadline(&ffmpeg, args, &token, &deadline)?;
+        if !result.status.success() {
+            return Err(format!(
+                "FFmpeg assembly export failed with status {}: {}",
+                result.status,
+                String::from_utf8_lossy(&result.stderr).trim()
+            ));
+        }
+        let _ = fs::remove_file(&source_path);
+        output
+    };
+    verify_rendered_drag_file(&output_path, &normalized_format)?;
+    Ok(PreparedRegionDragFile {
+        asset_id: "assembly".to_string(),
+        path: output_path.to_string_lossy().to_string(),
+        format: normalized_format,
+        region_start_seconds: 0.0,
+        region_end_seconds: 0.0,
+        processing_hash: "assembly".to_string(),
+    })
+}
+
 fn verify_rendered_drag_file(output_path: &Path, format: &str) -> Result<(), String> {
     let metadata = fs::metadata(output_path)
         .map_err(|error| format!("rendered {format} drag file is missing: {error}"))?;
@@ -3221,6 +3325,34 @@ mod tests {
             )
             .expect("insert asset");
         connection
+    }
+
+    #[test]
+    fn prepares_assembly_wav_drag_file() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "sonilabs_assembly_drag_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&temp_root);
+        fs::create_dir_all(&temp_root).expect("create assembly drag temp root");
+        let prepared = prepare_assembly_drag_file(
+            &temp_root,
+            None,
+            "Layered impact",
+            render_mock_wav_region_16_bit(0.25, 0.0),
+            "wav",
+            r#"{"wavBitDepth":16}"#,
+        )
+        .expect("prepare assembly WAV drag file");
+        assert_eq!(prepared.format, "wav");
+        assert_eq!(
+            Path::new(&prepared.path)
+                .extension()
+                .and_then(|extension| extension.to_str()),
+            Some("wav")
+        );
+        assert!(fs::metadata(&prepared.path).expect("prepared metadata").len() > 44);
+        let _ = fs::remove_dir_all(temp_root);
     }
 
     fn test_processing_json(gain_db: f64) -> String {

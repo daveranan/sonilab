@@ -945,6 +945,16 @@ fn rename_collection(
 }
 
 #[tauri::command]
+fn move_collection(
+    app: AppHandle,
+    id: String,
+    parent_id: Option<String>,
+    sort_order: i64,
+) -> Result<Option<CollectionRecord>, String> {
+    data_repository(&app)?.move_collection(&id, parent_id.as_deref(), sort_order)
+}
+
+#[tauri::command]
 fn delete_collection(app: AppHandle, id: String) -> Result<bool, String> {
     data_repository(&app)?.delete_collection(&id)
 }
@@ -2598,6 +2608,63 @@ fn search_asset_ids(
     Ok(ids)
 }
 
+#[tauri::command]
+fn prepare_assembly_drag_file(
+    app: AppHandle,
+    project_name: String,
+    bytes: Vec<u8>,
+    format: String,
+    format_settings_json: Option<String>,
+    temp_folder: Option<String>,
+) -> Result<export::PreparedRegionDragFile, String> {
+    let resource_dir = app.path().resource_dir().ok();
+    let temp_root = resolve_export_drag_temp_root(temp_folder)?;
+    export::prepare_assembly_drag_file(
+        &temp_root,
+        resource_dir.as_deref(),
+        &project_name,
+        bytes,
+        &format,
+        &format_settings_json.unwrap_or_else(|| "{}".to_string()),
+    )
+}
+
+#[tauri::command]
+fn copy_prepared_assembly_export(
+    source_path: String,
+    destination_path: String,
+) -> Result<(), String> {
+    let source = PathBuf::from(source_path);
+    let destination = PathBuf::from(destination_path);
+    let source_extension = source.extension().and_then(|value| value.to_str());
+    let destination_extension = destination.extension().and_then(|value| value.to_str());
+    if source_extension.is_none()
+        || !source_extension
+            .zip(destination_extension)
+            .is_some_and(|(source, destination)| source.eq_ignore_ascii_case(destination))
+    {
+        return Err("assembly export destination must keep the prepared format".to_string());
+    }
+    fs::copy(&source, &destination)
+        .map(|_| ())
+        .map_err(|error| format!("failed to copy {}: {error}", destination.display()))
+}
+
+#[tauri::command]
+fn write_assembly_wav(path: String, bytes: Vec<u8>) -> Result<(), String> {
+    let output_path = PathBuf::from(path);
+    if output_path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| !extension.eq_ignore_ascii_case("wav"))
+        .unwrap_or(true)
+    {
+        return Err("Assembly exports must use a .wav file extension".to_string());
+    }
+    fs::write(&output_path, bytes)
+        .map_err(|error| format!("failed to write {}: {error}", output_path.display()))
+}
+
 fn search_asset_ids_by_user_tag(
     connection: &Connection,
     tag_query: &str,
@@ -3240,6 +3307,7 @@ pub fn run() {
             create_collection,
             list_collections,
             rename_collection,
+            move_collection,
             delete_collection,
             add_collection_asset,
             remove_collection_asset,
@@ -3260,6 +3328,7 @@ pub fn run() {
             app_restart_recovery,
             resolve_preview_file,
             read_preview_file_bytes,
+            write_assembly_wav,
             setup_freesound_credentials,
             freesound_search,
             cache_freesound_preview,
@@ -3281,6 +3350,8 @@ pub fn run() {
             cancel_export_job,
             prepare_region_drag_file,
             prepare_asset_drag_file,
+            prepare_assembly_drag_file,
+            copy_prepared_assembly_export,
             delete_prepared_drag_files,
             start_native_file_drag,
             diagnose_native_file_drag_payload,

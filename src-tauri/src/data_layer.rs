@@ -103,6 +103,7 @@ pub struct CollectionRecord {
     pub name: String,
     pub sort_order: i64,
     pub updated_at: String,
+    pub item_count: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1068,7 +1069,10 @@ impl DataRepository {
     pub fn get_collection(&self, id: &str) -> Result<Option<CollectionRecord>, String> {
         self.connection
             .query_row(
-                "SELECT id, parent_id, name, sort_order, updated_at FROM collections WHERE id = ?1",
+                "SELECT c.id, c.parent_id, c.name, c.sort_order, c.updated_at,
+                        (SELECT COUNT(*) FROM collection_items ci WHERE ci.collection_id = c.id)
+                 FROM collections c
+                 WHERE c.id = ?1",
                 params![id],
                 |row| {
                     Ok(CollectionRecord {
@@ -1077,6 +1081,7 @@ impl DataRepository {
                         name: row.get(2)?,
                         sort_order: row.get(3)?,
                         updated_at: row.get(4)?,
+                        item_count: row.get(5)?,
                     })
                 },
             )
@@ -1088,9 +1093,10 @@ impl DataRepository {
         let mut statement = self
             .connection
             .prepare(
-                "SELECT id, parent_id, name, sort_order, updated_at
-                 FROM collections
-                 ORDER BY parent_id IS NOT NULL, sort_order, updated_at DESC, name",
+                "SELECT c.id, c.parent_id, c.name, c.sort_order, c.updated_at,
+                        (SELECT COUNT(*) FROM collection_items ci WHERE ci.collection_id = c.id)
+                 FROM collections c
+                 ORDER BY c.parent_id IS NOT NULL, c.sort_order, c.updated_at DESC, c.name",
             )
             .map_err(|error| error.to_string())?;
         let rows = statement
@@ -1101,6 +1107,7 @@ impl DataRepository {
                     name: row.get(2)?,
                     sort_order: row.get(3)?,
                     updated_at: row.get(4)?,
+                    item_count: row.get(5)?,
                 })
             })
             .map_err(|error| error.to_string())?;
@@ -1166,6 +1173,48 @@ impl DataRepository {
         for asset_id in asset_ids {
             self.index_asset_for_search(&asset_id)?;
         }
+        self.get_collection(id)
+    }
+
+    pub fn move_collection(
+        &self,
+        id: &str,
+        parent_id: Option<&str>,
+        sort_order: i64,
+    ) -> Result<Option<CollectionRecord>, String> {
+        let Some(current) = self.get_collection(id)? else {
+            return Ok(None);
+        };
+        if self.is_system_collection(id)? {
+            return Err("system collections cannot be moved".to_string());
+        }
+        if parent_id == Some(id) {
+            return Err("collection cannot contain itself".to_string());
+        }
+        let mut cursor = parent_id.map(str::to_string);
+        while let Some(candidate_id) = cursor {
+            if candidate_id == id {
+                return Err("collection cannot be moved into its descendant".to_string());
+            }
+            let Some(candidate) = self.get_collection(&candidate_id)? else {
+                return Err("parent collection not found".to_string());
+            };
+            if self.is_system_collection(&candidate_id)? {
+                return Err("system collections cannot contain nested collections".to_string());
+            }
+            cursor = candidate.parent_id;
+        }
+        if current.parent_id.as_deref() == parent_id && current.sort_order == sort_order {
+            return Ok(Some(current));
+        }
+        self.connection
+            .execute(
+                "UPDATE collections
+                 SET parent_id = ?2, sort_order = ?3, updated_at = CURRENT_TIMESTAMP
+                 WHERE id = ?1",
+                params![id, parent_id, sort_order],
+            )
+            .map_err(|error| error.to_string())?;
         self.get_collection(id)
     }
 
@@ -1929,6 +1978,13 @@ mod tests {
             .expect("add folder ref");
 
         assert_eq!(impacts.parent_id, Some(project.id));
+        assert_eq!(
+            repo.get_collection(&impacts.id)
+                .expect("read counted collection")
+                .expect("counted collection exists")
+                .item_count,
+            2
+        );
         assert_eq!(item.item_kind, "asset");
         assert_eq!(folder_item.item_kind, "folder_ref");
         assert_eq!(
@@ -2024,6 +2080,44 @@ mod tests {
             .get_collection(&favorites.id)
             .expect("read favorites")
             .is_some());
+    }
+
+    #[test]
+    fn collection_move_supports_reparenting_and_rejects_cycles() {
+        let repo = migrated_repo();
+        let root_a = repo
+            .create_collection(None, "Root A", 0)
+            .expect("create root A");
+        let root_b = repo
+            .create_collection(None, "Root B", 0)
+            .expect("create root B");
+        let child = repo
+            .create_collection(Some(&root_a.id), "Child", 0)
+            .expect("create child");
+        let moved = repo
+            .move_collection(&child.id, Some(&root_b.id), 0)
+            .expect("move child")
+            .expect("moved child exists");
+        assert_eq!(moved.parent_id, Some(root_b.id.clone()));
+        assert!(repo
+            .move_collection(&root_b.id, Some(&child.id), 0)
+            .is_err());
+        let root_again = repo
+            .move_collection(&child.id, None, 0)
+            .expect("move child to root")
+            .expect("root child exists");
+        assert_eq!(root_again.parent_id, None);
+
+        let system = repo
+            .ensure_system_collections()
+            .expect("ensure system collections");
+        let favorites = system
+            .iter()
+            .find(|collection| collection.name == "Favorites")
+            .expect("favorites exists");
+        assert!(repo
+            .move_collection(&child.id, Some(&favorites.id), 0)
+            .is_err());
     }
 
     #[test]

@@ -42,6 +42,7 @@ type BrowseTableProps = {
     row: Extract<BrowseRowModel, { kind: "asset" }>,
     pointer: { clientX: number; clientY: number },
   ) => void;
+  preferInternalAssetDrag?: boolean;
   onOpenFolder?: (row: Extract<BrowseRowModel, { kind: "folder" }>) => void;
   onInternalDragStart?: (event: React.DragEvent, row: BrowseRowModel) => void;
   onAddToCollection?: (row: BrowseRowModel) => void;
@@ -130,6 +131,7 @@ export function BrowseTable({
   onDeleteRow,
   onOpenInExplorer,
   onGoToFolder,
+  preferInternalAssetDrag = false,
   onOpenFolder,
   onInternalDragStart,
   onSortChange,
@@ -442,6 +444,7 @@ export function BrowseTable({
                   onInternalDragStart={onInternalDragStart}
                   onOpenInExplorer={onOpenInExplorer}
                   onGoToFolder={onGoToFolder}
+                  preferInternalAssetDrag={preferInternalAssetDrag}
                   previewed={previewedRowIds.has(row.id)}
                   row={row}
                   selected={selectedRowIds.has(row.id)}

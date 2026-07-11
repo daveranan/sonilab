@@ -8,8 +8,10 @@ describe("left sidebar", () => {
     const html = renderToString(
       <LeftSidebar
         activity={[{ id: "a", label: "Search", detail: "tag:metal" }]}
-        collections={[{ id: "c", label: "Favorites" }]}
-        libraries={[{ id: "local", label: "Local", kind: "root" }]}
+        collections={[{ id: "c", label: "Favorites", itemCount: 7 }]}
+        libraries={[
+          { id: "tags", label: "Tags", kind: "tagRoot", itemCount: 12 },
+        ]}
       />,
     );
 
@@ -17,6 +19,8 @@ describe("left sidebar", () => {
     expect(html).not.toContain("Drop a file or folder");
     expect(html).toContain("Collections");
     expect(html).toContain("Activity History");
+    expect(html).toContain(">7<");
+    expect(html).toContain(">12<");
     expect(html).not.toContain("Cloud");
     expect(html).not.toContain("Processing");
     expect(html).not.toContain("Inspector");

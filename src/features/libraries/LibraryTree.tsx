@@ -194,6 +194,11 @@ function TreeNode({
             ) : null}
             <Icon className="size-3.5 shrink-0" />
             <span className="min-w-0 flex-1 truncate text-left">{node.label}</span>
+            {node.itemCount !== undefined ? (
+              <span className="shrink-0 text-[10px] tabular-nums opacity-60">
+                {node.itemCount}
+              </span>
+            ) : null}
             {StatusIcon ? (
               <StatusIcon
                 aria-label={sourceStatusLabels[node.status!]}

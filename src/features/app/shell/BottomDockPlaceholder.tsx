@@ -5,6 +5,7 @@ import {
   FolderOpen,
   Gauge,
   Info,
+  Layers3,
   Music2,
   Pause,
   Play,
@@ -107,7 +108,9 @@ type StoredExportDefaults = {
 };
 
 type BottomDockPlaceholderProps = {
+  isAssemblerOpen: boolean;
   isSummaryOpen: boolean;
+  onToggleAssembler: () => void;
   onPreviewedRow: (rowId: string) => void;
   onPlayedAsset?: (row: Extract<BrowseRow, { kind: "asset" }>) => void;
   onExportsChanged?: () => void;
@@ -124,6 +127,15 @@ function ignoresTransportShortcut(target: EventTarget | null): boolean {
     return ["text", "search", "url", "email", "password", "tel"].includes(target.type);
   }
   return false;
+}
+
+function pointerIsOutsideApp(clientX: number, clientY: number): boolean {
+  return (
+    clientX <= 0 ||
+    clientY <= 0 ||
+    clientX >= window.innerWidth - 1 ||
+    clientY >= window.innerHeight - 1
+  );
 }
 
 function clearsFocusAfterPointer(target: EventTarget | null): target is HTMLElement {
@@ -274,7 +286,9 @@ function readStoredExportDefaults(): StoredExportDefaults {
 }
 
 export function BottomDockPlaceholder({
+  isAssemblerOpen,
   isSummaryOpen,
+  onToggleAssembler,
   onExportsChanged,
   onPlayedAsset,
   onPreviewedRow,
@@ -621,6 +635,7 @@ export function BottomDockPlaceholder({
         event as CustomEvent<{
           kind: string;
           rowId: string | null;
+          asset?: Extract<BrowseRow, { kind: "asset" }>;
           preserveSelection?: boolean;
         }>
       ).detail;
@@ -640,12 +655,21 @@ export function BottomDockPlaceholder({
         } else previewAtIndex(index);
       }
       if (detail.kind === "start-preview") {
-        previewAtIndex(index, { preserveSelection: detail.preserveSelection });
+        if (index >= 0) {
+          previewAtIndex(index, { preserveSelection: detail.preserveSelection });
+        } else if (detail.asset) {
+          setHeldAsset(detail.asset);
+          onPreviewedRow(detail.asset.id);
+          onPlayedAsset?.(detail.asset);
+          void audioPreviewService.previewAsset(detail.asset.id, {
+            loopMode: "off",
+          });
+        }
       }
     };
     window.addEventListener("sonilabs:preview-intent", handler);
     return () => window.removeEventListener("sonilabs:preview-intent", handler);
-  }, [previewAtIndex, previewState.status, rows]);
+  }, [onPlayedAsset, onPreviewedRow, previewAtIndex, previewState.status, rows]);
 
   const updateProcessing = useCallback((patch: Partial<ProcessingSettings>) => {
     audioPreviewService.setProcessing(patch);
@@ -1252,13 +1276,26 @@ export function BottomDockPlaceholder({
 
   useEffect(() => {
     const handler = (event: Event) => {
-      const detail = (event as CustomEvent<{ kind: string }>).detail;
+      const detail = (
+        event as CustomEvent<{
+          kind: string;
+          assetId?: string;
+          region?: WaveformRegion | null;
+        }>
+      ).detail;
       if (detail?.kind === "clear-region") handleRegionChange(null);
+      if (detail?.kind === "set-region") {
+        const nextRegion = detail.region ?? null;
+        setRegion(nextRegion);
+        setRegionAssetId(detail.assetId ?? displayAsset?.id ?? null);
+        audioPreviewService.setRegion(nextRegion);
+        if (nextRegion) audioPreviewService.seek(nextRegion.startSeconds);
+      }
       if (detail?.kind === "toggle-loop") updateLoopEnabled(!currentLoopEnabled());
     };
     window.addEventListener("sonilabs:waveform-intent", handler);
     return () => window.removeEventListener("sonilabs:waveform-intent", handler);
-  }, [currentLoopEnabled, handleRegionChange, updateLoopEnabled]);
+  }, [currentLoopEnabled, displayAsset?.id, handleRegionChange, updateLoopEnabled]);
 
   useEffect(() => {
     const handlePointerUp = (event: PointerEvent) => {
@@ -1275,6 +1312,15 @@ export function BottomDockPlaceholder({
     };
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || ignoresTransportShortcut(event.target)) return;
+      if (isAssemblerOpen) {
+        if (
+          event.shiftKey &&
+          (event.key === " " || event.key.toLowerCase() === "v")
+        ) {
+          return;
+        }
+        if (event.key !== " ") return;
+      }
       if (event.key === "Escape") {
         event.preventDefault();
         handleRegionChange(null);
@@ -1317,6 +1363,7 @@ export function BottomDockPlaceholder({
     };
     const handleKeyUp = (event: KeyboardEvent) => {
       if (event.key !== " " || ignoresTransportShortcut(event.target)) return;
+      if (isAssemblerOpen && event.shiftKey) return;
       event.preventDefault();
       event.stopPropagation();
     };
@@ -1334,6 +1381,7 @@ export function BottomDockPlaceholder({
     cancelCrossfadeRenderAutoplay,
     currentLoopEnabled,
     handleRegionChange,
+    isAssemblerOpen,
     pausePreviewPlayback,
     playSelectedRegion,
     previewAtIndex,
@@ -1353,6 +1401,19 @@ export function BottomDockPlaceholder({
       return { aacBitrateKbps: formatQuality };
     return { mp3BitrateKbps: formatQuality, mp3Mode: "cbr" as const };
   }, [format, formatQuality]);
+
+  useEffect(() => {
+    const announce = () => {
+      window.dispatchEvent(
+        new CustomEvent("sonilabs:export-format-changed", {
+          detail: { format, formatSettings, tempFolder },
+        }),
+      );
+    };
+    announce();
+    window.addEventListener("sonilabs:export-format-request", announce);
+    return () => window.removeEventListener("sonilabs:export-format-request", announce);
+  }, [format, formatSettings, tempFolder]);
 
   useEffect(() => {
     if (!dragOverlay) return;
@@ -1620,8 +1681,11 @@ export function BottomDockPlaceholder({
     tempFolder,
   ]);
 
-  const handleRegionFileDragRequest = useCallback(
-    (dragRegion: WaveformRegion) => {
+  const startRegionFileExport = useCallback(
+    (
+      dragRegion: WaveformRegion,
+      pointer: { clientX: number; clientY: number },
+    ) => {
       if (!displayAsset) return;
       setDragFailurePath(null);
       const fadeInSeconds = activeLoopCrossfadeSeconds
@@ -1644,8 +1708,8 @@ export function BottomDockPlaceholder({
       );
       setDragOverlay({
         message: canNativeCut ? "Preparing cut..." : "Rendering export...",
-        x: window.innerWidth / 2,
-        y: window.innerHeight - 180,
+        x: pointer.clientX,
+        y: pointer.clientY,
       });
       void (async () => {
         window.dispatchEvent(
@@ -1729,6 +1793,92 @@ export function BottomDockPlaceholder({
       regionFadeOutSeconds,
       tempFolder,
     ],
+  );
+
+  const handleRegionFileDragRequest = useCallback(
+    (
+      dragRegion: WaveformRegion,
+      pointer: { clientX: number; clientY: number },
+    ) => {
+      if (!displayAsset) return;
+      if (!isAssemblerOpen) {
+        startRegionFileExport(dragRegion, pointer);
+        return;
+      }
+
+      setDragFailurePath(null);
+      setExportStatus("Drop region into Assembler, or drag outside to export.");
+      window.dispatchEvent(
+        new CustomEvent("sonilabs:assembly-region-drag-start", {
+          detail: {
+            asset: displayAsset,
+            region: dragRegion,
+            x: pointer.clientX,
+            y: pointer.clientY,
+          },
+        }),
+      );
+
+      let resolved = false;
+      const cleanup = () => {
+        window.removeEventListener("pointermove", handlePointerMove, true);
+        window.removeEventListener("pointerout", handlePointerOut, true);
+        window.removeEventListener("pointerup", handlePointerUp, true);
+        window.removeEventListener("keydown", handleKeyDown, true);
+      };
+      const cancelInternal = () => {
+        window.dispatchEvent(
+          new CustomEvent("sonilabs:assembly-region-drag-cancel"),
+        );
+      };
+      const handlePointerMove = (event: PointerEvent) => {
+        if (resolved) return;
+        if (pointerIsOutsideApp(event.clientX, event.clientY)) {
+          resolved = true;
+          cleanup();
+          cancelInternal();
+          startRegionFileExport(dragRegion, {
+            clientX: event.clientX,
+            clientY: event.clientY,
+          });
+          return;
+        }
+        window.dispatchEvent(
+          new CustomEvent("sonilabs:assembly-region-drag-move", {
+            detail: { x: event.clientX, y: event.clientY },
+          }),
+        );
+      };
+      const handlePointerOut = (event: PointerEvent) => {
+        if (event.relatedTarget || resolved || event.buttons !== 1) return;
+        resolved = true;
+        cleanup();
+        cancelInternal();
+        startRegionFileExport(dragRegion, {
+          clientX: event.clientX,
+          clientY: event.clientY,
+        });
+      };
+      const handlePointerUp = () => {
+        if (resolved) return;
+        resolved = true;
+        cleanup();
+        window.dispatchEvent(new CustomEvent("sonilabs:assembly-region-drag-end"));
+      };
+      const handleKeyDown = (event: KeyboardEvent) => {
+        if (event.key !== "Escape" || resolved) return;
+        resolved = true;
+        cleanup();
+        cancelInternal();
+        setExportStatus("Region drag cancelled.");
+      };
+
+      window.addEventListener("pointermove", handlePointerMove, true);
+      window.addEventListener("pointerout", handlePointerOut, true);
+      window.addEventListener("pointerup", handlePointerUp, true);
+      window.addEventListener("keydown", handleKeyDown, true);
+    },
+    [displayAsset, isAssemblerOpen, startRegionFileExport],
   );
 
   const handleAssetFileDragRequest = useCallback(
@@ -1853,7 +2003,12 @@ export function BottomDockPlaceholder({
   }, [handleAssetFileDragRequest]);
 
   return (
-    <section className="col-span-2 col-start-2 row-start-2 border-t border-border bg-panel">
+    <section
+      className={cn(
+        "col-start-2 row-start-2 border-t border-border bg-panel",
+        !isAssemblerOpen && "col-span-2",
+      )}
+    >
       {dragOverlay ? (
         <div
           className="pointer-events-none fixed z-[1000] rounded border border-border bg-black/90 px-2 py-1 text-[11px] text-foreground shadow-lg"
@@ -2459,6 +2614,16 @@ export function BottomDockPlaceholder({
             variant={isSummaryOpen ? "default" : "ghost"}
           >
             <Info className="size-3.5" />
+          </Button>
+          <Button
+            className="h-8 gap-1.5 px-2"
+            onClick={onToggleAssembler}
+            size="sm"
+            title={isAssemblerOpen ? "Close Assembler" : "Open Assembler"}
+            variant={isAssemblerOpen ? "default" : "ghost"}
+          >
+            <Layers3 className="size-3.5" />
+            Assemble
           </Button>
           <Button
             className="h-8 gap-1.5 px-2"

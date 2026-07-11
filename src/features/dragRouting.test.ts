@@ -1,9 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  dataTransferHasType,
   shouldShowImportDropOverlay,
   shouldStartAssetFileExportDrag,
+  sonilabsAssemblyClipDragType,
+  sonilabsAssemblyProjectDragType,
+  sonilabsAssemblyTrackDragType,
   sonilabsAssetDragType,
+  sonilabsCollectionDragType,
 } from "./dragRouting";
 
 describe("shared drag routing", () => {
@@ -42,6 +47,13 @@ describe("shared drag routing", () => {
     expect(
       shouldShowImportDropOverlay({
         exportDragActive: false,
+        internalDragActive: false,
+        dataTransferTypes: [sonilabsCollectionDragType],
+      }),
+    ).toBe(false);
+    expect(
+      shouldShowImportDropOverlay({
+        exportDragActive: false,
         internalDragActive: true,
         dataTransferTypes: ["Files"],
       }),
@@ -51,6 +63,27 @@ describe("shared drag routing", () => {
         exportDragActive: false,
         internalDragActive: false,
         dataTransferTypes: [sonilabsAssetDragType],
+      }),
+    ).toBe(false);
+    expect(
+      shouldShowImportDropOverlay({
+        exportDragActive: false,
+        internalDragActive: false,
+        dataTransferTypes: [sonilabsAssemblyClipDragType],
+      }),
+    ).toBe(false);
+    expect(
+      shouldShowImportDropOverlay({
+        exportDragActive: false,
+        internalDragActive: false,
+        dataTransferTypes: [sonilabsAssemblyTrackDragType],
+      }),
+    ).toBe(false);
+    expect(
+      shouldShowImportDropOverlay({
+        exportDragActive: false,
+        internalDragActive: false,
+        dataTransferTypes: [sonilabsAssemblyProjectDragType],
       }),
     ).toBe(false);
   });
@@ -68,6 +101,26 @@ describe("shared drag routing", () => {
         exportDragActive: false,
         internalDragActive: false,
         dataTransferTypes: ["text/plain"],
+      }),
+    ).toBe(false);
+  });
+
+  it("recognizes WebView DOMStringList drag types", () => {
+    expect(
+      dataTransferHasType(
+        {
+          contains: (type: string) => type === sonilabsAssetDragType,
+        },
+        sonilabsAssetDragType,
+      ),
+    ).toBe(true);
+    expect(
+      shouldShowImportDropOverlay({
+        exportDragActive: false,
+        internalDragActive: false,
+        dataTransferTypes: {
+          contains: (type: string) => type === sonilabsAssetDragType,
+        },
       }),
     ).toBe(false);
   });

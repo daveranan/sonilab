@@ -15,6 +15,8 @@ type CollectionRecord = {
   sortOrder?: number;
   updated_at?: string;
   updatedAt?: string;
+  item_count?: number;
+  itemCount?: number;
 };
 
 type ActivityRecord = {
@@ -94,6 +96,29 @@ export async function renameCollection(
     logger.error("Rename collection failed", {
       id,
       name,
+      error: errorLogValue(error),
+    });
+    return null;
+  }
+}
+
+export async function moveCollection(
+  id: string,
+  parentId: string | null,
+  sortOrder = 0,
+): Promise<CollectionNode | null> {
+  if (!hasTauri()) return null;
+  try {
+    const record = await invoke<CollectionRecord | null>("move_collection", {
+      id,
+      parentId,
+      sortOrder,
+    });
+    return record ? collectionRecordToNode(record) : null;
+  } catch (error) {
+    logger.error("Move collection failed", {
+      id,
+      parentId,
       error: errorLogValue(error),
     });
     return null;
@@ -237,6 +262,7 @@ function collectionRecordToNode(record: CollectionRecord): CollectionNode {
     label: record.name,
     parentId,
     updatedAt: record.updated_at ?? record.updatedAt,
+    itemCount: record.item_count ?? record.itemCount ?? 0,
     system:
       parentId === null &&
       (record.name === "Favorites" || record.name === "Export Queue"),
