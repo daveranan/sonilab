@@ -244,6 +244,7 @@ function normalizedFormat(value: string | null | undefined): string {
 
 function processingIsNeutral(processing: ProcessingSettings): boolean {
   return (
+    !processing.reversed &&
     processing.channelMode === "all" &&
     Math.abs(processing.gainDb) < 0.000_001 &&
     Math.abs(processing.pitchSemitones) < 0.000_001 &&
@@ -252,6 +253,26 @@ function processingIsNeutral(processing: ProcessingSettings): boolean {
         Math.abs(processing.eq.midDb) < 0.000_001 &&
         Math.abs(processing.eq.highDb) < 0.000_001))
   );
+}
+
+function withTimeout<T>(
+  promise: Promise<T>,
+  milliseconds: number,
+  message: string,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = window.setTimeout(() => reject(new Error(message)), milliseconds);
+    promise.then(
+      (value) => {
+        window.clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        window.clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
 }
 
 function OutputMeter({ meter }: { meter: OutputMeterSnapshot }) {
@@ -441,6 +462,12 @@ export function BottomDockPlaceholder({
       }),
     [],
   );
+  const toggleReverse = useCallback(() => {
+    const current = audioPreviewService.getProcessing();
+    audioPreviewService.setProcessing({ reversed: !current.reversed });
+    setProcessing(audioPreviewService.getProcessing());
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     const tick = () => {
@@ -1312,6 +1339,18 @@ export function BottomDockPlaceholder({
     };
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || ignoresTransportShortcut(event.target)) return;
+      if (
+        !isAssemblerOpen &&
+        !event.ctrlKey &&
+        !event.metaKey &&
+        !event.altKey &&
+        event.key.toLowerCase() === "r"
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+        toggleReverse();
+        return;
+      }
       if (isAssemblerOpen) {
         if (
           event.shiftKey &&
@@ -1387,6 +1426,7 @@ export function BottomDockPlaceholder({
     previewAtIndex,
     previewState.status,
     toggleLoopCrossfade,
+    toggleReverse,
     updateLoopEnabled,
   ]);
 
@@ -1813,6 +1853,17 @@ export function BottomDockPlaceholder({
           detail: {
             asset: displayAsset,
             region: dragRegion,
+            processing: {
+              mode: processing.mode,
+              gainDb: processing.gainDb,
+              eq: { ...processing.eq },
+              pitchSemitones: processing.pitchSemitones,
+              playbackRate: processing.playbackRate,
+              channelMode: processing.channelMode,
+              reversed: processing.reversed ?? false,
+            },
+            fadeInSeconds: activeRegionFadeInSeconds,
+            fadeOutSeconds: activeRegionFadeOutSeconds,
             x: pointer.clientX,
             y: pointer.clientY,
           },
@@ -1878,7 +1929,20 @@ export function BottomDockPlaceholder({
       window.addEventListener("pointerup", handlePointerUp, true);
       window.addEventListener("keydown", handleKeyDown, true);
     },
-    [displayAsset, isAssemblerOpen, startRegionFileExport],
+    [
+      activeRegionFadeInSeconds,
+      activeRegionFadeOutSeconds,
+      displayAsset,
+      isAssemblerOpen,
+      processing.channelMode,
+      processing.eq,
+      processing.gainDb,
+      processing.mode,
+      processing.pitchSemitones,
+      processing.playbackRate,
+      processing.reversed,
+      startRegionFileExport,
+    ],
   );
 
   const handleAssetFileDragRequest = useCallback(
@@ -1925,19 +1989,31 @@ export function BottomDockPlaceholder({
         );
         try {
           const prepared = [];
-          for (const asset of assets) {
-            const file = await prepareAssetDragFile({
-              assetId: asset.assetId,
-              displayName: asset.displayName,
-              format,
-              formatSettings: canPassthroughOriginal ? {} : formatSettings,
-              gainDb: processing.gainDb,
-              channelMode: processing.channelMode,
-              eq: processing.eq,
-              pitchSemitones: processing.pitchSemitones,
-              region: null,
-              tempFolder,
-            });
+          for (const [index, asset] of assets.entries()) {
+            const progressLabel = asset.displayName ?? asset.assetId;
+            const progressMessage = `Rendering ${index + 1}/${assets.length}: ${progressLabel}`;
+            setExportStatus(progressMessage);
+            setDragOverlay((current) => ({
+              message: progressMessage,
+              x: current?.x ?? detail.pointer?.clientX ?? window.innerWidth / 2,
+              y: current?.y ?? detail.pointer?.clientY ?? window.innerHeight / 2,
+            }));
+            const file = await withTimeout(
+              prepareAssetDragFile({
+                assetId: asset.assetId,
+                displayName: asset.displayName,
+                format,
+                formatSettings: canPassthroughOriginal ? {} : formatSettings,
+                gainDb: processing.gainDb,
+                channelMode: processing.channelMode,
+                eq: processing.eq,
+                pitchSemitones: processing.pitchSemitones,
+                region: null,
+                tempFolder,
+              }),
+              120_000,
+              `Timed out rendering ${progressLabel}.`,
+            );
             if (file) prepared.push(file);
           }
           setDragOverlay(null);
@@ -1949,7 +2025,7 @@ export function BottomDockPlaceholder({
           }
           const nativeDrag = await startPreparedFilesDrag(
             prepared.map((file) => file.path),
-            { preferNative: !canPassthroughOriginal || prepared.length > 1 },
+            { preferNative: prepared.length === 1 && !canPassthroughOriginal },
           );
           if (!nativeDrag.ok || nativeDrag.effect !== "copy") {
             setDragFailurePath(prepared[0]?.path ?? null);
@@ -1964,6 +2040,12 @@ export function BottomDockPlaceholder({
             }.`,
           );
         } catch (error: unknown) {
+          logger.error("Multi-file drag export failed", {
+            code: "MULTI_FILE_DRAG_FAILED",
+            assetCount: assets.length,
+            format: format.toLowerCase(),
+            error: error instanceof Error ? error.message : String(error),
+          });
           setExportStatus(
             error instanceof Error ? error.message : "File drag export failed.",
           );
@@ -2153,6 +2235,19 @@ export function BottomDockPlaceholder({
             variant="ghost"
           >
             <Repeat2 className="size-4 rotate-90" />
+          </Button>
+          <Button
+            aria-pressed={Boolean(processing.reversed)}
+            className={cn(
+              "size-8 p-0",
+              processing.reversed && "bg-primary text-primary-foreground",
+            )}
+            onClick={toggleReverse}
+            size="icon"
+            title="Reverse playback (R)"
+            variant="ghost"
+          >
+            <RotateCcw className="size-4" />
           </Button>
         </div>
         <div className="flex min-w-0 flex-1 items-center gap-3 border-r border-border/70 px-3">

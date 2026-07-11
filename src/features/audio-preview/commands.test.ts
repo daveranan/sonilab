@@ -71,14 +71,11 @@ describe("export file drag command helper", () => {
     expect(nativeFallback).not.toHaveBeenCalled();
   });
 
-  it("uses native COM drag first for multi-file drags by default", async () => {
-    const pluginStartDrag = vi.fn();
-    const nativeFallback = vi.fn(async () => ({
-      ok: true,
-      effect: "copy" as const,
-      error: undefined,
-      diagnostics: ["native"],
-    }));
+  it("uses the non-blocking plugin first for multi-file drags", async () => {
+    const pluginStartDrag = vi.fn(async (_options, onEvent) => {
+      onEvent?.({ result: "Dropped" });
+    });
+    const nativeFallback = vi.fn();
 
     const result = await startPreparedFilesDrag(
       ["C:\\tmp\\one.wav", "C:\\tmp\\two.wav"],
@@ -89,14 +86,16 @@ describe("export file drag command helper", () => {
     );
 
     expect(result.ok).toBe(true);
-    expect(nativeFallback).toHaveBeenCalledWith([
-      "C:\\tmp\\one.wav",
-      "C:\\tmp\\two.wav",
-    ]);
-    expect(pluginStartDrag).not.toHaveBeenCalled();
+    expect(pluginStartDrag).toHaveBeenCalledWith(
+      expect.objectContaining({
+        item: ["C:\\tmp\\one.wav", "C:\\tmp\\two.wav"],
+      }),
+      expect.any(Function),
+    );
+    expect(nativeFallback).not.toHaveBeenCalled();
   });
 
-  it("falls back to native COM drag with all paths when plugin drag fails", async () => {
+  it("fails safely instead of invoking blocking native multi-file drag", async () => {
     const pluginStartDrag = vi.fn(async () => {
       throw new Error("plugin unavailable");
     });
@@ -116,11 +115,8 @@ describe("export file drag command helper", () => {
       },
     );
 
-    expect(result.ok).toBe(true);
-    expect(nativeFallback).toHaveBeenCalledWith([
-      "C:\\tmp\\one.wav",
-      "C:\\tmp\\two.wav",
-    ]);
+    expect(result.ok).toBe(false);
+    expect(nativeFallback).not.toHaveBeenCalled();
     expect(result.diagnostics[0]).toContain("plugin unavailable");
   });
 

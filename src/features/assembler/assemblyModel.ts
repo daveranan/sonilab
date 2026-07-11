@@ -3,6 +3,7 @@ import type { WaveformRegion } from "@/features/audio-preview/types";
 import type {
   AssemblyAsset,
   AssemblyClip,
+  AssemblyClipProcessing,
   AssemblyProject,
   AssemblyTrack,
 } from "./types";
@@ -41,15 +42,18 @@ export function createClip(
   asset: AssemblyAsset,
   region: WaveformRegion | null,
   startSeconds: number,
+  processing?: AssemblyClipProcessing,
 ): AssemblyClip {
   const sourceStartSeconds = Math.max(0, region?.startSeconds ?? 0);
   const regionDuration = region
     ? Math.max(0.01, region.endSeconds - region.startSeconds)
     : null;
-  const durationSeconds = Math.max(
+  const sourceDurationSeconds = Math.max(
     0.01,
     regionDuration ?? asset.durationSeconds ?? defaultClipDurationSeconds,
   );
+  const playbackRate = processingPlaybackRate(processing);
+  const durationSeconds = sourceDurationSeconds / playbackRate;
   let hash = 0;
   for (let index = 0; index < asset.id.length; index += 1) {
     hash = (hash * 31 + asset.id.charCodeAt(index)) | 0;
@@ -64,8 +68,32 @@ export function createClip(
     durationSeconds,
     fadeInSeconds: 0,
     fadeOutSeconds: 0,
+    ...(processing
+      ? {
+          processing: {
+            mode: processing.mode,
+            gainDb: processing.gainDb,
+            eq: { ...processing.eq },
+            pitchSemitones: processing.pitchSemitones,
+            playbackRate: processing.playbackRate,
+            channelMode: processing.channelMode,
+            reversed: processing.reversed ?? false,
+          },
+        }
+      : {}),
     colorIndex: Math.abs(hash) % 5,
   };
+}
+
+export function processingPlaybackRate(
+  processing: AssemblyClipProcessing | undefined,
+): number {
+  if (!processing) return 1;
+  const pitchRate =
+    processing.mode === "processed"
+      ? 2 ** (Math.max(-12, Math.min(12, processing.pitchSemitones)) / 12)
+      : 1;
+  return Math.max(0.25, Math.min(4, processing.playbackRate * pitchRate));
 }
 
 export function duplicateClip(
@@ -256,10 +284,11 @@ export function trimClip(
       clips: track.clips.map((clip) => {
         if (clip.id !== clipId) return clip;
         const clipEndSeconds = clip.startSeconds + clip.durationSeconds;
+        const playbackRate = processingPlaybackRate(clip.processing);
         if (edge === "start") {
           const earliestStartSeconds = Math.max(
             0,
-            clip.startSeconds - clip.sourceStartSeconds,
+            clip.startSeconds - clip.sourceStartSeconds / playbackRate,
           );
           const nextStartSeconds = Math.min(
             clipEndSeconds - minClipDurationSeconds,
@@ -276,7 +305,10 @@ export function trimClip(
           return {
             ...clip,
             startSeconds: nextStartSeconds,
-            sourceStartSeconds: Math.max(0, clip.sourceStartSeconds + actualDelta),
+            sourceStartSeconds: Math.max(
+              0,
+              clip.sourceStartSeconds + actualDelta * playbackRate,
+            ),
             durationSeconds: nextDurationSeconds,
             fadeInSeconds: Math.min(clip.fadeInSeconds ?? 0, nextDurationSeconds),
             fadeOutSeconds: Math.min(clip.fadeOutSeconds ?? 0, nextDurationSeconds),
@@ -285,7 +317,8 @@ export function trimClip(
         const maxDurationSeconds = Number.isFinite(sourceDurationSeconds)
           ? Math.max(
               minClipDurationSeconds,
-              (sourceDurationSeconds ?? 0) - clip.sourceStartSeconds,
+              ((sourceDurationSeconds ?? 0) - clip.sourceStartSeconds) /
+                playbackRate,
             )
           : Number.POSITIVE_INFINITY;
         const nextDurationSeconds = Math.min(

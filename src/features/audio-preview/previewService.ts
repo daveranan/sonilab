@@ -64,6 +64,7 @@ const defaultProcessing: ProcessingSettings = {
   muted: false,
   playbackRate: 1,
   channelMode: "all",
+  reversed: false,
 };
 const mediaRegionEndEpsilonSeconds = 0.002;
 
@@ -123,6 +124,7 @@ export class AudioPreviewService {
   private listeners = new Set<Listener>();
   private processingListeners = new Set<ProcessingListener>();
   private bufferCache = new DecodedBufferCache();
+  private reversedBuffers = new WeakMap<AudioBuffer, AudioBuffer>();
   private processing = defaultProcessing;
   private startedAtContextTime = 0;
   private sourceOffsetSeconds = 0;
@@ -257,6 +259,19 @@ export class AudioPreviewService {
       processing?: Partial<ProcessingSettings>;
     } = {},
   ): Promise<void> {
+    const assetChanged = this.state.assetId !== assetId;
+    if (assetChanged) {
+      this.processing = {
+        ...this.processing,
+        mode: "original",
+        gainDb: 0,
+        eq: { enabled: false, lowDb: 0, midDb: 0, highDb: 0 },
+        pitchSemitones: 0,
+        channelMode: "all",
+        reversed: false,
+      };
+      this.emitProcessing();
+    }
     const requestId = this.nextRequest(
       assetId,
       options.loopMode ?? this.state.loopMode,
@@ -526,6 +541,10 @@ export class AudioPreviewService {
           ? this.processing.pitchSemitones
           : clampPitchSemitones(processing.pitchSemitones),
       channelMode: nextChannelMode,
+      reversed:
+        processing.reversed === undefined
+          ? this.processing.reversed
+          : processing.reversed,
       playbackRate:
         processing.playbackRate === undefined
           ? this.processing.playbackRate
@@ -548,12 +567,16 @@ export class AudioPreviewService {
     this.applyPlaybackRate();
     this.emitProcessing();
     if (
-      processing.channelMode !== undefined &&
-      processing.channelMode !== previousChannelMode &&
+      (processing.reversed !== undefined ||
+        (processing.channelMode !== undefined &&
+          processing.channelMode !== previousChannelMode)) &&
       this.state.status === "playing" &&
       this.activeBuffer
     ) {
-      this.startBuffer(this.activeBuffer, this.currentPlayheadSeconds());
+      this.startBuffer(
+        this.activeBuffer,
+        playheadBeforeRateChange ?? this.currentPlayheadSeconds(),
+      );
     }
     if (this.mediaElement) this.applyMediaSettings();
   }
@@ -634,7 +657,9 @@ export class AudioPreviewService {
     const elapsed =
       (this.audioContext.currentTime - this.startedAtContextTime) *
       this.effectivePlaybackRate();
-    const next = this.sourceOffsetSeconds + elapsed;
+    const next = this.processing.reversed
+      ? this.sourceOffsetSeconds - elapsed
+      : this.sourceOffsetSeconds + elapsed;
     if (this.tempLoopPreview && this.activeBuffer) {
       const loopSeconds =
         ((next % this.tempLoopPreview.loopDurationSeconds) +
@@ -645,6 +670,11 @@ export class AudioPreviewService {
     const region = validLoopRegion(this.loopRegion, this.activeBuffer?.duration ?? 0);
     if (this.state.loopMode === "region" && region) {
       const span = region.endSeconds - region.startSeconds;
+      if (this.processing.reversed) {
+        const elapsedFromEnd =
+          (((region.endSeconds - next) % span) + span) % span;
+        return region.endSeconds - elapsedFromEnd;
+      }
       return (
         region.startSeconds + ((((next - region.startSeconds) % span) + span) % span)
       );
@@ -653,7 +683,12 @@ export class AudioPreviewService {
       return Math.max(region.startSeconds, Math.min(region.endSeconds, next));
     }
     if (this.state.loopMode === "file" && this.activeBuffer) {
-      return next % this.activeBuffer.duration;
+      const wrapped =
+        ((next % this.activeBuffer.duration) + this.activeBuffer.duration) %
+        this.activeBuffer.duration;
+      return this.processing.reversed && wrapped === 0 && next > 0
+        ? this.activeBuffer.duration
+        : wrapped;
     }
     return Math.min(this.state.durationSeconds, next);
   }
@@ -992,7 +1027,8 @@ export class AudioPreviewService {
     void this.resumeContextForPlayback();
     this.stopSource();
     const source = this.audioContext.createBufferSource();
-    source.buffer = buffer;
+    const reversed = Boolean(this.processing.reversed);
+    source.buffer = reversed ? this.reversedBuffer(buffer) : buffer;
     source.playbackRate.value = this.effectivePlaybackRate();
     if (this.tempLoopPreview) {
       source.loop = true;
@@ -1036,6 +1072,23 @@ export class AudioPreviewService {
       playbackDuration = region.endSeconds - offsetSeconds;
       playbackEndSeconds = region.endSeconds;
     }
+    if (reversed) {
+      if (region && offsetSeconds <= region.startSeconds + 0.000_001) {
+        offsetSeconds = region.endSeconds;
+      } else if (!region && offsetSeconds <= 0.000_001) {
+        offsetSeconds = buffer.duration;
+      }
+      playbackEndSeconds = region?.startSeconds ?? 0;
+      if (!source.loop) {
+        playbackDuration = offsetSeconds - (region?.startSeconds ?? 0);
+      }
+      if (source.loop) {
+        const loopStart = source.loopStart;
+        const loopEnd = source.loopEnd;
+        source.loopStart = buffer.duration - loopEnd;
+        source.loopEnd = buffer.duration - loopStart;
+      }
+    }
     const envelopeGain = this.audioContext.createGain();
     this.applyBufferRegionFadeEnvelope(
       envelopeGain.gain,
@@ -1057,13 +1110,37 @@ export class AudioPreviewService {
     this.source = source;
     this.startedAtContextTime = this.audioContext.currentTime;
     this.sourceOffsetSeconds = Math.max(0, Math.min(buffer.duration, offsetSeconds));
-    source.start(0, this.sourceOffsetSeconds, playbackDuration);
+    const bufferOffsetSeconds = reversed
+      ? Math.max(0, buffer.duration - this.sourceOffsetSeconds)
+      : this.sourceOffsetSeconds;
+    source.start(0, bufferOffsetSeconds, playbackDuration);
     this.emit({
       status: "playing",
       playheadSeconds: this.tempLoopPreview
         ? this.tempLoopPlayheadFromOffset(this.sourceOffsetSeconds)
         : this.sourceOffsetSeconds,
     });
+  }
+
+  private reversedBuffer(buffer: AudioBuffer): AudioBuffer {
+    const cached = this.reversedBuffers.get(buffer);
+    if (cached) return cached;
+    const context = this.audioContext;
+    if (!context) return buffer;
+    const reversed = context.createBuffer(
+      buffer.numberOfChannels,
+      buffer.length,
+      buffer.sampleRate,
+    );
+    for (let channel = 0; channel < buffer.numberOfChannels; channel += 1) {
+      const source = buffer.getChannelData(channel);
+      const target = reversed.getChannelData(channel);
+      for (let index = 0; index < source.length; index += 1) {
+        target[index] = source[source.length - index - 1] ?? 0;
+      }
+    }
+    this.reversedBuffers.set(buffer, reversed);
+    return reversed;
   }
 
   private stopSource(): void {

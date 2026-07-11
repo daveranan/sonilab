@@ -8,8 +8,23 @@ import {
 import type { PreparedRegionDragFile } from "@/features/audio-preview/commands";
 
 import type { AssemblyProject } from "./types";
+import { processingPlaybackRate } from "./assemblyModel";
 
 const outputSampleRate = 48_000;
+
+function selectedChannelIndexes(
+  mode: string | undefined,
+  channelCount: number,
+): number[] {
+  if (!mode || mode === "all") return [];
+  const values = mode.startsWith("channels:")
+    ? mode.slice("channels:".length).split(",")
+    : [mode.slice("channel:".length)];
+  return [...new Set(values.map(Number))].filter(
+    (channel) =>
+      Number.isInteger(channel) && channel >= 0 && channel < channelCount,
+  );
+}
 
 function hasTauriRuntime(): boolean {
   return "__TAURI_INTERNALS__" in globalThis;
@@ -59,12 +74,48 @@ export async function renderAssemblyWav(project: AssemblyProject): Promise<Uint8
       clip.sourceStartSeconds,
       Math.max(0, buffer.duration - 0.001),
     );
-    const duration = Math.min(clip.durationSeconds, buffer.duration - offset);
+    const playbackRate = processingPlaybackRate(clip.processing);
+    const duration = Math.min(
+      clip.durationSeconds,
+      (buffer.duration - offset) / playbackRate,
+    );
     if (duration <= 0) continue;
+    const sourceDuration = duration * playbackRate;
+    let renderBuffer = buffer;
+    let renderOffset = offset;
+    if (clip.processing?.reversed) {
+      const startFrame = Math.floor(offset * buffer.sampleRate);
+      const frameCount = Math.max(
+        1,
+        Math.min(
+          buffer.length - startFrame,
+          Math.ceil(sourceDuration * buffer.sampleRate),
+        ),
+      );
+      renderBuffer = context.createBuffer(
+        buffer.numberOfChannels,
+        frameCount,
+        buffer.sampleRate,
+      );
+      for (let channel = 0; channel < buffer.numberOfChannels; channel += 1) {
+        const input = buffer.getChannelData(channel);
+        const output = renderBuffer.getChannelData(channel);
+        for (let frame = 0; frame < frameCount; frame += 1) {
+          output[frame] = input[startFrame + frameCount - frame - 1] ?? 0;
+        }
+      }
+      renderOffset = 0;
+    }
     const source = context.createBufferSource();
     const gainNode = context.createGain();
-    source.buffer = buffer;
+    source.buffer = renderBuffer;
+    source.playbackRate.value = playbackRate;
     const trackGain = Math.max(0, Math.min(2, gain));
+    const processingGain =
+      clip.processing?.mode === "processed"
+        ? 10 ** (Math.max(-24, Math.min(36, clip.processing.gainDb)) / 20)
+        : 1;
+    const renderedGain = trackGain * processingGain;
     const fadeInSeconds = Math.min(
       duration,
       Math.max(0, clip.fadeInSeconds ?? 0),
@@ -75,16 +126,50 @@ export async function renderAssemblyWav(project: AssemblyProject): Promise<Uint8
     );
     const clipStart = clip.startSeconds;
     const clipEnd = clipStart + duration;
-    gainNode.gain.setValueAtTime(fadeInSeconds > 0 ? 0 : trackGain, clipStart);
+    gainNode.gain.setValueAtTime(fadeInSeconds > 0 ? 0 : renderedGain, clipStart);
     if (fadeInSeconds > 0) {
-      gainNode.gain.linearRampToValueAtTime(trackGain, clipStart + fadeInSeconds);
+      gainNode.gain.linearRampToValueAtTime(
+        renderedGain,
+        clipStart + fadeInSeconds,
+      );
     }
     if (fadeOutSeconds > 0) {
-      gainNode.gain.setValueAtTime(trackGain, clipEnd - fadeOutSeconds);
+      gainNode.gain.setValueAtTime(renderedGain, clipEnd - fadeOutSeconds);
       gainNode.gain.linearRampToValueAtTime(0, clipEnd);
     }
-    source.connect(gainNode).connect(context.destination);
-    source.start(clip.startSeconds, offset, duration);
+    const channels = selectedChannelIndexes(
+      clip.processing?.channelMode,
+      renderBuffer.numberOfChannels,
+    );
+    if (channels.length) {
+      const splitter = context.createChannelSplitter(renderBuffer.numberOfChannels);
+      source.connect(splitter);
+      for (const channel of channels) splitter.connect(gainNode, channel);
+    } else {
+      source.connect(gainNode);
+    }
+    const eq = clip.processing?.mode === "processed" && clip.processing.eq.enabled
+      ? clip.processing.eq
+      : null;
+    if (eq) {
+      const low = context.createBiquadFilter();
+      const mid = context.createBiquadFilter();
+      const high = context.createBiquadFilter();
+      low.type = "lowshelf";
+      low.frequency.value = 120;
+      low.gain.value = Math.max(-12, Math.min(12, eq.lowDb));
+      mid.type = "peaking";
+      mid.frequency.value = 1_000;
+      mid.Q.value = 1;
+      mid.gain.value = Math.max(-12, Math.min(12, eq.midDb));
+      high.type = "highshelf";
+      high.frequency.value = 8_000;
+      high.gain.value = Math.max(-12, Math.min(12, eq.highDb));
+      gainNode.connect(low).connect(mid).connect(high).connect(context.destination);
+    } else {
+      gainNode.connect(context.destination);
+    }
+    source.start(clip.startSeconds, renderOffset, sourceDuration);
   }
 
   return encodeWav(await context.startRendering());

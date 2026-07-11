@@ -13,6 +13,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { cn } from "@/lib/utils";
 import { formatAudioTimeParts } from "@/lib/timeFormat";
 import { shouldStartAssetFileExportDrag } from "@/features/dragRouting";
+import { audioPreviewService } from "@/features/audio-preview/previewService";
 
 import type { BrowseRow as BrowseRowModel, LazyMetadataResponse } from "./browseTypes";
 import type { BrowseColumn } from "./columns";
@@ -334,9 +335,18 @@ function BrowseRowComponent({
           fileDragRef.current.suppressClick = true;
           if (preferInternalAssetDrag && !fileDragRef.current.started) {
             fileDragRef.current.started = true;
+            const processing =
+              audioPreviewService.getState().assetId === row.id
+                ? audioPreviewService.getProcessing()
+                : undefined;
             window.dispatchEvent(
               new CustomEvent("sonilabs:assembly-row-drag-start", {
-                detail: { asset: row, x: event.clientX, y: event.clientY },
+                detail: {
+                  asset: row,
+                  processing,
+                  x: event.clientX,
+                  y: event.clientY,
+                },
               }),
             );
           }

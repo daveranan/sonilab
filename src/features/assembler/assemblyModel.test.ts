@@ -55,6 +55,28 @@ describe("assembly model", () => {
     expect(clip.startSeconds).toBe(2);
   });
 
+  it("snapshots preview processing and uses its rendered duration", () => {
+    const clip = createClip(asset, { startSeconds: 0, endSeconds: 2 }, 0, {
+      mode: "processed",
+      gainDb: 6,
+      eq: { enabled: true, lowDb: 2, midDb: -1, highDb: 3 },
+      pitchSemitones: 12,
+      playbackRate: 1,
+      channelMode: "channel:0",
+      reversed: false,
+    });
+    expect(clip.durationSeconds).toBeCloseTo(1);
+    expect(clip.processing).toEqual({
+      mode: "processed",
+      gainDb: 6,
+      eq: { enabled: true, lowDb: 2, midDb: -1, highDb: 3 },
+      pitchSemitones: 12,
+      playbackRate: 1,
+      channelMode: "channel:0",
+      reversed: false,
+    });
+  });
+
   it("moves clips between layers and updates project duration", () => {
     const project = createAssemblyProject();
     const clip = createClip(asset, null, 0);

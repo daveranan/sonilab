@@ -14,6 +14,7 @@ import {
 import { processedGain } from "./audioMath";
 import { audioPreviewService, type OutputMeterSnapshot } from "./previewService";
 import { formatAudioTimeParts } from "@/lib/timeFormat";
+import { createLogger } from "@/lib/logger";
 import type {
   ChannelMonitorMode,
   WaveformPeakChannel,
@@ -29,6 +30,8 @@ import {
   xToSeconds,
   zoomViewport,
 } from "./waveformMath";
+
+const waveformLogger = createLogger("waveform");
 
 type WaveformCanvasProps = {
   assetId: string | null;
@@ -848,6 +851,7 @@ export function WaveformCanvas({
     );
     const coldTimer: number | null = null;
     const loadWaveform = async () => {
+      let lastGenerationError: unknown = null;
       try {
         const peaks = await getCachedWaveformPeaks(
           assetId,
@@ -882,6 +886,7 @@ export function WaveformCanvas({
           return;
         } catch (error) {
           if (cancelled) return;
+          lastGenerationError = error;
           console.warn(`Waveform generation attempt ${attempt + 1} failed`, error);
           try {
             const cached = await getCachedWaveformPeaks(
@@ -909,7 +914,22 @@ export function WaveformCanvas({
         }
       }
 
-      if (!cancelled) setStatus("failed");
+      if (!cancelled) {
+        setStatus("failed");
+        waveformLogger.error("Waveform unavailable after retries", {
+          code: "WAVEFORM_UNAVAILABLE",
+          assetId,
+          contentKey,
+          durationSeconds: knownDuration,
+          sampleRate: knownSampleRate,
+          samplesPerPeak,
+          attempts: waveformRetryDelaysMs.length + 1,
+          error:
+            lastGenerationError instanceof Error
+              ? lastGenerationError.message
+              : String(lastGenerationError ?? "Unknown waveform failure"),
+        });
+      }
     };
     void loadWaveform();
     return () => {

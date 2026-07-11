@@ -30,7 +30,7 @@ import {
   type UpdateFlowStatus,
 } from "@/features/audio-preview/commands";
 import { audioPreviewService } from "@/features/audio-preview/previewService";
-import { getBufferedLogEvents } from "@/lib/logger";
+import { addLogSink, getBufferedLogEvents } from "@/lib/logger";
 
 type LocalSourceRecord = {
   id: string;
@@ -673,6 +673,11 @@ function DiagnosticsPanel({
   onStatus: (status: string | null) => void;
   updateStatus: UpdateFlowStatus | null;
 }) {
+  const [, setLogVersion] = useState(0);
+  useEffect(
+    () => addLogSink(() => setLogVersion((version) => version + 1)),
+    [],
+  );
   const recentEvents = getBufferedLogEvents().slice(-20);
   const latestError = [...recentEvents]
     .reverse()

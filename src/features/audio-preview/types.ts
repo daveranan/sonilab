@@ -24,6 +24,7 @@ export interface ProcessingSettings {
   muted: boolean;
   playbackRate: number;
   channelMode: ChannelMonitorMode;
+  reversed?: boolean;
 }
 
 export interface EqualizerSettings {

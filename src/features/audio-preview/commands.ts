@@ -761,7 +761,7 @@ export async function startPreparedFilesDrag(
 
   const pluginStartDrag = options.pluginStartDrag ?? startCrabnebulaDrag;
   const nativeFallback = options.nativeFallback ?? invokeNativeFileDrag;
-  const preferNative = options.preferNative ?? paths.length > 1;
+  const preferNative = options.preferNative ?? false;
   if (preferNative) {
     let nativeFailure: NativeFileDragResponse;
     try {
@@ -816,6 +816,17 @@ export async function startPreparedFilesDrag(
     );
   } catch (pluginError) {
     const pluginDiagnostic = `CrabNebula drag-rs plugin failed: ${errorMessage(pluginError)}`;
+    if (paths.length > 1) {
+      return {
+        ok: false,
+        effect: "none",
+        error: "Multi-file drag could not start safely; prepared files are still available.",
+        diagnostics: [
+          pluginDiagnostic,
+          "Skipped the blocking Windows native multi-file drag fallback.",
+        ],
+      };
+    }
     try {
       const fallback = await nativeFallback(paths);
       return {
@@ -955,7 +966,23 @@ export async function openBrowseRowInExplorer(input: {
 
 export async function openLocalPath(path: string): Promise<void> {
   if (!path) return;
-  await openPath(path);
+  try {
+    await openPath(path);
+  } catch {
+    if (
+      typeof navigator !== "undefined" &&
+      /Windows/i.test(navigator.userAgent) &&
+      /\.(?:log|ndjson|json|txt)$/i.test(path)
+    ) {
+      try {
+        await openPath(path, "notepad");
+        return;
+      } catch {
+        // Fall through to Explorer if no text editor can be launched.
+      }
+    }
+    await revealItemInDir(path);
+  }
 }
 
 function parentPath(path: string): string {

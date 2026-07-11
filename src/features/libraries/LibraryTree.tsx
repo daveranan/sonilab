@@ -126,10 +126,11 @@ function TreeNode({
   const sourceId = node.sourceId ?? (node.kind === "source" ? node.id : undefined);
   const showSourceCheckbox = node.kind === "source" && Boolean(sourceId);
   const activateNode = (recursive: boolean) => {
-    if ((node.kind === "root" || node.kind === "tagRoot") && hasChildren) {
+    if (node.kind === "tagRoot" && hasChildren) {
       toggle(node, recursive);
       return;
     }
+    if (node.kind === "root" && hasChildren) toggle(node, recursive);
     if (recursive && onCheckOnlyNode) {
       onCheckOnlyNode(node);
       return;
