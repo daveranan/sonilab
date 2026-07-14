@@ -353,6 +353,8 @@ export function BottomDockPlaceholder({
     x: number;
     y: number;
   } | null>(null);
+  const equalizerSurfaceRef = useRef<HTMLDivElement | null>(null);
+  const pitchSurfaceRef = useRef<HTMLDivElement | null>(null);
   const lastPreviewUiFrameRef = useRef(0);
   const waveformWarmupTimerRef = useRef<number | null>(null);
   const crossfadePreviewTimerRef = useRef<number | null>(null);
@@ -377,6 +379,26 @@ export function BottomDockPlaceholder({
   const [loopCrossfadeSlope, setLoopCrossfadeSlope] = useState(
     defaultLoopCrossfadeSlope,
   );
+
+  useEffect(() => {
+    if (!equalizerOpen && !pitchOpen) return;
+
+    const handleOutsidePointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+
+      const activeSurface = equalizerOpen
+        ? equalizerSurfaceRef.current
+        : pitchSurfaceRef.current;
+      if (activeSurface?.contains(target)) return;
+
+      modalManager.close(equalizerOpen ? "equalizer" : "pitch");
+    };
+
+    document.addEventListener("pointerdown", handleOutsidePointerDown, true);
+    return () =>
+      document.removeEventListener("pointerdown", handleOutsidePointerDown, true);
+  }, [equalizerOpen, modalManager, pitchOpen]);
   const [regionFadeGapSeconds, setRegionFadeGapSeconds] = useState(
     defaultRegionFadeGapSeconds,
   );
@@ -2425,7 +2447,7 @@ export function BottomDockPlaceholder({
               </div>
             ) : null}
           </div>
-          <div className="relative">
+          <div className="relative" ref={equalizerSurfaceRef}>
             <Button
               aria-expanded={equalizerOpen}
               aria-pressed={eqActive}
@@ -2492,7 +2514,7 @@ export function BottomDockPlaceholder({
               </div>
             ) : null}
           </div>
-          <div className="relative">
+          <div className="relative" ref={pitchSurfaceRef}>
             <Button
               aria-expanded={pitchOpen}
               aria-pressed={pitchActive}

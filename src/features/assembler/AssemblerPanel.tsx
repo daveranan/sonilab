@@ -391,6 +391,7 @@ export function AssemblerPanel({
   const [timelinePanning, setTimelinePanning] = useState(false);
   const [snapEnabled, setSnapEnabled] = useState(true);
   const [snapGuideSeconds, setSnapGuideSeconds] = useState<number | null>(null);
+  const [clipInspectorOpen, setClipInspectorOpen] = useState(false);
   const [, setHistoryVersion] = useState(0);
   const [waveformsByAssetId, setWaveformsByAssetId] = useState<
     Record<string, WaveformPeakData>
@@ -2139,7 +2140,21 @@ export function AssemblerPanel({
             value={zoom}
           />
           <Button
-            className="ml-1 size-8 p-0"
+            aria-pressed={clipInspectorOpen}
+            className={cn(
+              "ml-1 size-8 p-0",
+              clipInspectorOpen && "bg-cyan-300/20 text-cyan-200",
+            )}
+            disabled={!selectedClip}
+            onClick={() => setClipInspectorOpen((open) => !open)}
+            size="icon"
+            title={clipInspectorOpen ? "Close clip inspector" : "Open clip inspector"}
+            variant="ghost"
+          >
+            <SlidersHorizontal className="size-3.5" />
+          </Button>
+          <Button
+            className="size-8 p-0"
             disabled={selectedClipCount === 0}
             onClick={removeSelectedClips}
             size="icon"
@@ -2150,174 +2165,6 @@ export function AssemblerPanel({
           </Button>
         </div>
       </div>
-
-      {selectedClip ? (
-        <div
-          className="grid shrink-0 grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-2 border-b border-border bg-panel/70 px-3 py-2 text-[10px]"
-          data-assembly-clip-inspector
-        >
-          <div className="flex items-center gap-1.5 self-start pt-1 font-medium text-foreground">
-            <SlidersHorizontal className="size-3.5" />
-            <span className="max-w-28 truncate" title={selectedClip.name}>
-              {selectedClip.name}
-            </span>
-          </div>
-          <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
-            <label className="flex items-center gap-1">
-              <span>Gain</span>
-              <input
-                className="w-16 accent-cyan-300"
-                max={36}
-                min={-24}
-                onChange={(event) =>
-                  updateSelectedClipProcessing({
-                    gainDb: Number(event.target.value),
-                    mode: "processed",
-                  })
-                }
-                step={0.5}
-                type="range"
-                value={selectedClipProcessing.gainDb}
-              />
-              <span className="w-8 text-right font-mono">
-                {selectedClipProcessing.gainDb.toFixed(1)}
-              </span>
-            </label>
-            <label className="flex items-center gap-1">
-              <span>Pitch</span>
-              <input
-                className="w-16 accent-cyan-300"
-                max={12}
-                min={-12}
-                onChange={(event) =>
-                  updateSelectedClipProcessing({
-                    pitchSemitones: Number(event.target.value),
-                    mode: "processed",
-                  })
-                }
-                step={1}
-                type="range"
-                value={selectedClipProcessing.pitchSemitones}
-              />
-              <span className="w-5 text-right font-mono">
-                {selectedClipProcessing.pitchSemitones}
-              </span>
-            </label>
-            <label className="flex items-center gap-1">
-              <span>Speed</span>
-              <select
-                className="h-6 rounded-sm border border-border bg-background px-1"
-                onChange={(event) =>
-                  updateSelectedClipProcessing({
-                    playbackRate: Number(event.target.value),
-                  })
-                }
-                value={selectedClipProcessing.playbackRate}
-              >
-                {[0.5, 0.75, 1, 1.25, 1.5, 2].map((rate) => (
-                  <option key={rate} value={rate}>{rate}x</option>
-                ))}
-              </select>
-            </label>
-            <label className="flex items-center gap-1">
-              <span>Channel</span>
-              <select
-                className="h-6 rounded-sm border border-border bg-background px-1"
-                onChange={(event) =>
-                  updateSelectedClipProcessing({
-                    channelMode: event.target.value as AssemblyClipProcessing["channelMode"],
-                  })
-                }
-                value={selectedClipProcessing.channelMode}
-              >
-                <option value="all">All</option>
-                <option value="channel:0">1</option>
-                <option value="channel:1">2</option>
-              </select>
-            </label>
-            <Button
-              aria-pressed={Boolean(selectedClipProcessing.reversed)}
-              className="h-6 gap-1 px-1.5 text-[10px]"
-              onClick={toggleSelectedClipReverse}
-              size="sm"
-              title="Reverse clip (R)"
-              variant={selectedClipProcessing.reversed ? "default" : "ghost"}
-            >
-              <RotateCcw className="size-3" /> Reverse
-            </Button>
-          </div>
-          <span className="self-center text-muted-foreground">EQ / fades</span>
-          <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
-            {(["lowDb", "midDb", "highDb"] as const).map((band) => (
-              <label className="flex items-center gap-1" key={band}>
-                <span className="capitalize">{band.replace("Db", "")}</span>
-                <input
-                  className="w-12 accent-cyan-300"
-                  max={12}
-                  min={-12}
-                  onChange={(event) =>
-                    updateSelectedClipProcessing({
-                      eq: {
-                        ...selectedClipProcessing.eq,
-                        enabled: true,
-                        [band]: Number(event.target.value),
-                      },
-                      mode: "processed",
-                    })
-                  }
-                  step={0.5}
-                  type="range"
-                  value={selectedClipProcessing.eq[band]}
-                />
-              </label>
-            ))}
-            <label className="flex items-center gap-1">
-              <span>In</span>
-              <input
-                className="w-14 accent-cyan-300"
-                max={selectedClip.durationSeconds}
-                min={0}
-                onChange={(event) =>
-                  updateSelectedClipFields({
-                    fadeInSeconds: Number(event.target.value),
-                  })
-                }
-                step={0.01}
-                type="range"
-                value={selectedClip.fadeInSeconds}
-              />
-            </label>
-            <label className="flex items-center gap-1">
-              <span>Out</span>
-              <input
-                className="w-14 accent-cyan-300"
-                max={selectedClip.durationSeconds}
-                min={0}
-                onChange={(event) =>
-                  updateSelectedClipFields({
-                    fadeOutSeconds: Number(event.target.value),
-                  })
-                }
-                step={0.01}
-                type="range"
-                value={selectedClip.fadeOutSeconds}
-              />
-            </label>
-            <Button
-              className="h-6 px-1.5 text-[10px]"
-              onClick={() =>
-                updateSelectedClipProcessing({
-                  mode: selectedClipProcessing.mode === "processed" ? "original" : "processed",
-                })
-              }
-              size="sm"
-              variant={selectedClipProcessing.mode === "processed" ? "default" : "ghost"}
-            >
-              {selectedClipProcessing.mode === "processed" ? "Processed" : "Bypassed"}
-            </Button>
-          </div>
-        </div>
-      ) : null}
 
       <div className="relative min-h-0 flex-1">
       <div
@@ -2936,6 +2783,191 @@ export function AssemblerPanel({
           Drop here for a new layer
         </div>
       </div>
+
+      {selectedClip && clipInspectorOpen ? (
+        <section
+          aria-label={`Clip inspector for ${selectedClip.name}`}
+          className="absolute bottom-14 left-2 right-5 z-[90] overflow-hidden rounded-md border border-border bg-[#121418]/95 text-[10px] shadow-[0_14px_40px_rgba(0,0,0,0.55)] backdrop-blur"
+          data-assembly-clip-inspector
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <header className="flex h-8 items-center gap-2 border-b border-border/80 bg-white/[0.025] px-2">
+            <SlidersHorizontal className="size-3.5 shrink-0 text-cyan-300" />
+            <span className="min-w-0 flex-1 truncate font-medium text-foreground" title={selectedClip.name}>
+              {selectedClip.name}
+            </span>
+            <span className="rounded-sm bg-background px-1.5 py-0.5 text-[9px] text-muted-foreground">
+              Clip inspector
+            </span>
+            <Button
+              className="size-6 p-0"
+              onClick={() => setClipInspectorOpen(false)}
+              size="icon"
+              title="Close clip inspector"
+              variant="ghost"
+            >
+              <X className="size-3" />
+            </Button>
+          </header>
+
+          <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-2 px-2 py-2">
+            <label className="flex items-center gap-1.5">
+              <span className="text-muted-foreground">Gain</span>
+              <input
+                className="w-20 accent-cyan-300"
+                max={36}
+                min={-24}
+                onChange={(event) =>
+                  updateSelectedClipProcessing({
+                    gainDb: Number(event.target.value),
+                    mode: "processed",
+                  })
+                }
+                step={0.5}
+                type="range"
+                value={selectedClipProcessing.gainDb}
+              />
+              <span className="w-9 text-right font-mono text-foreground">
+                {selectedClipProcessing.gainDb.toFixed(1)}
+              </span>
+            </label>
+            <label className="flex items-center gap-1.5">
+              <span className="text-muted-foreground">Pitch</span>
+              <input
+                className="w-20 accent-cyan-300"
+                max={12}
+                min={-12}
+                onChange={(event) =>
+                  updateSelectedClipProcessing({
+                    pitchSemitones: Number(event.target.value),
+                    mode: "processed",
+                  })
+                }
+                step={1}
+                type="range"
+                value={selectedClipProcessing.pitchSemitones}
+              />
+              <span className="w-5 text-right font-mono text-foreground">
+                {selectedClipProcessing.pitchSemitones}
+              </span>
+            </label>
+            <label className="flex items-center gap-1.5">
+              <span className="text-muted-foreground">Speed</span>
+              <select
+                className="h-6 rounded-sm border border-border bg-background px-1.5"
+                onChange={(event) =>
+                  updateSelectedClipProcessing({
+                    playbackRate: Number(event.target.value),
+                  })
+                }
+                value={selectedClipProcessing.playbackRate}
+              >
+                {[0.5, 0.75, 1, 1.25, 1.5, 2].map((rate) => (
+                  <option key={rate} value={rate}>{rate}x</option>
+                ))}
+              </select>
+            </label>
+            <label className="flex items-center gap-1.5">
+              <span className="text-muted-foreground">Channel</span>
+              <select
+                className="h-6 rounded-sm border border-border bg-background px-1.5"
+                onChange={(event) =>
+                  updateSelectedClipProcessing({
+                    channelMode: event.target.value as AssemblyClipProcessing["channelMode"],
+                  })
+                }
+                value={selectedClipProcessing.channelMode}
+              >
+                <option value="all">All</option>
+                <option value="channel:0">1</option>
+                <option value="channel:1">2</option>
+              </select>
+            </label>
+            <Button
+              aria-pressed={Boolean(selectedClipProcessing.reversed)}
+              className="h-6 gap-1 px-2 text-[10px]"
+              onClick={toggleSelectedClipReverse}
+              size="sm"
+              title="Reverse clip (R)"
+              variant={selectedClipProcessing.reversed ? "default" : "ghost"}
+            >
+              <RotateCcw className="size-3" /> Reverse
+            </Button>
+
+            <div className="h-5 w-px bg-border/80" />
+
+            {(["lowDb", "midDb", "highDb"] as const).map((band) => (
+              <label className="flex items-center gap-1.5" key={band}>
+                <span className="capitalize text-muted-foreground">
+                  {band.replace("Db", "")}
+                </span>
+                <input
+                  className="w-16 accent-cyan-300"
+                  max={12}
+                  min={-12}
+                  onChange={(event) =>
+                    updateSelectedClipProcessing({
+                      eq: {
+                        ...selectedClipProcessing.eq,
+                        enabled: true,
+                        [band]: Number(event.target.value),
+                      },
+                      mode: "processed",
+                    })
+                  }
+                  step={0.5}
+                  type="range"
+                  value={selectedClipProcessing.eq[band]}
+                />
+              </label>
+            ))}
+            <label className="flex items-center gap-1.5">
+              <span className="text-muted-foreground">Fade in</span>
+              <input
+                className="w-16 accent-cyan-300"
+                max={selectedClip.durationSeconds}
+                min={0}
+                onChange={(event) =>
+                  updateSelectedClipFields({
+                    fadeInSeconds: Number(event.target.value),
+                  })
+                }
+                step={0.01}
+                type="range"
+                value={selectedClip.fadeInSeconds}
+              />
+            </label>
+            <label className="flex items-center gap-1.5">
+              <span className="text-muted-foreground">Fade out</span>
+              <input
+                className="w-16 accent-cyan-300"
+                max={selectedClip.durationSeconds}
+                min={0}
+                onChange={(event) =>
+                  updateSelectedClipFields({
+                    fadeOutSeconds: Number(event.target.value),
+                  })
+                }
+                step={0.01}
+                type="range"
+                value={selectedClip.fadeOutSeconds}
+              />
+            </label>
+            <Button
+              className="h-6 px-2 text-[10px]"
+              onClick={() =>
+                updateSelectedClipProcessing({
+                  mode: selectedClipProcessing.mode === "processed" ? "original" : "processed",
+                })
+              }
+              size="sm"
+              variant={selectedClipProcessing.mode === "processed" ? "default" : "ghost"}
+            >
+              {selectedClipProcessing.mode === "processed" ? "Processed" : "Bypassed"}
+            </Button>
+          </div>
+        </section>
+      ) : null}
       </div>
 
       {marquee
