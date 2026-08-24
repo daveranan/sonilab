@@ -78,88 +78,8 @@ jobs:
             src-tauri/target/release/bundle/msi/*.msi
             src-tauri/target/release/bundle/msi/*.sig
 
-  package-macos:
-    needs: checks
-    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: macos-15-intel
-            target: x86_64-apple-darwin
-            artifact: macos-intel
-          - os: macos-15
-            target: aarch64-apple-darwin
-            artifact: macos-arm64
-    runs-on: ${{ matrix.os }}
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            src-tauri/target
-          key: cargo-${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('src-tauri/Cargo.lock') }}
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Stage macOS sidecars
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          mkdir -p src-tauri/bin
-
-          npm install --no-save --no-package-lock ffmpeg-static
-          ffmpeg_path="$(node -e 'console.log(require("ffmpeg-static"))')"
-          cp "$ffmpeg_path" src-tauri/bin/ffmpeg
-          chmod +x src-tauri/bin/ffmpeg
-
-          src-tauri/bin/ffmpeg -version
-
-      - name: Build macOS package
-        run: npm run typecheck && node scripts/bump-build-version.mjs && npm run tauri -- build --target ${{ matrix.target }} --bundles app,dmg
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-
-      - name: Prepare macOS release files
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p release-macos
-          version="$(node -p 'require("./src-tauri/tauri.conf.json").version')"
-          artifact="${{ matrix.artifact }}"
-
-          dmg="$(find "src-tauri/target/${{ matrix.target }}/release/bundle/dmg" -name "*.dmg" -print -quit)"
-          tarball="$(find "src-tauri/target/${{ matrix.target }}/release/bundle/macos" -name "*.app.tar.gz" -print -quit)"
-
-          cp "$dmg" "release-macos/Sonilabs.Sound.Library.Processor_${version}_${artifact}.dmg"
-          cp "$tarball" "release-macos/Sonilabs.Sound.Library.Processor_${version}_${artifact}.app.tar.gz"
-          cp "$tarball.sig" "release-macos/Sonilabs.Sound.Library.Processor_${version}_${artifact}.app.tar.gz.sig"
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.artifact }}
-          path: release-macos/*
-
   release:
-    needs:
-      - package-windows
-      - package-macos
+    needs: package-windows
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
 
