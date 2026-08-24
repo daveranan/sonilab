@@ -180,6 +180,12 @@ type IndexingProgressPayload = {
   message?: string | null;
 };
 
+type SearchIndexProgressPayload = {
+  current: number;
+  total: number;
+  status: "indexing" | "completed";
+};
+
 const collectionLogger = createLogger("collections");
 
 function hasTauri(): boolean {
@@ -204,6 +210,41 @@ function mergeFreeTextWithFilterQuery(
   const textTerms = parsedCurrent.query.text;
   if (!filterQuery.trim()) return textTerms.join(" ").trim();
   return [...textTerms, filterQuery.trim()].join(" ").trim();
+}
+
+export function relatedTagQuery(tags: string[]): string {
+  const usefulTags = [...new Set(tags.map((tag) => tag.trim()).filter(Boolean))].slice(
+    0,
+    8,
+  );
+  if (usefulTags.length === 0) return "";
+  const value = usefulTags.join("|").replace(/"/g, '\\"');
+  return `tagany:"${value}"`;
+}
+
+export function relatedTagOptionsForRows(
+  rows: BrowseRow[],
+  excludedTags: string[] = [],
+): { tag: string; count: number }[] {
+  const excluded = new Set(excludedTags.map((tag) => tag.trim().toLowerCase()));
+  const counts = new Map<string, number>();
+  for (const row of rows) {
+    if (row.kind !== "asset") continue;
+    for (const tag of new Set(row.tags.map((value) => value.trim()).filter(Boolean))) {
+      if (excluded.has(tag.toLowerCase())) continue;
+      counts.set(tag, (counts.get(tag) ?? 0) + 1);
+    }
+  }
+  return [...counts.entries()]
+    .map(([tag, count]) => ({ tag, count }))
+    .sort(
+      (left, right) => right.count - left.count || left.tag.localeCompare(right.tag),
+    )
+    .slice(0, 24);
+}
+
+function tagFilterToken(tag: string): string {
+  return /\s/.test(tag) ? `tag:"${tag.replace(/"/g, '\\"')}"` : `tag:${tag}`;
 }
 
 function removeFilterChipFromQuery(queryText: string, chipId: string): string {
@@ -1225,6 +1266,9 @@ function AppShellContent() {
     metadataFile: null,
   });
   const [indexingStatus, setIndexingStatus] = useState<string | null>(null);
+  const [searchIndexProgress, setSearchIndexProgress] =
+    useState<SearchIndexProgressPayload | null>(null);
+  const [relatedTagsOpen, setRelatedTagsOpen] = useState(false);
   const [collections, setCollections] = useState(initialCollections);
   const [renamingCollectionId, setRenamingCollectionId] = useState<string | null>(null);
   const [collectionPickerTarget, setCollectionPickerTarget] =
@@ -1452,6 +1496,24 @@ function AppShellContent() {
   const activeResponse = activeTab ? response : null;
   const browseLoading = activeTab ? loading : false;
   const rows = activeResponse?.rows ?? emptyBrowseRows;
+  const currentSearchTags = useMemo(
+    () =>
+      parsed.query.filters.flatMap((filter) => {
+        if (
+          filter.negated ||
+          typeof filter.value !== "string" ||
+          (filter.field !== "tag" && filter.field !== "tagany")
+        ) {
+          return [];
+        }
+        return filter.value.split("|").map((tag) => tag.trim());
+      }),
+    [parsed.query.filters],
+  );
+  const relatedTagOptions = useMemo(
+    () => relatedTagOptionsForRows(rows, currentSearchTags),
+    [currentSearchTags, rows],
+  );
   const activeAsset = useMemo(() => {
     const row = rows.find((candidate) => candidate.id === activeRowId);
     return row?.kind === "asset" ? row : null;
@@ -1795,6 +1857,19 @@ function AppShellContent() {
     return () => unlisten?.();
   }, [executeNow, refreshLibraries]);
 
+  useEffect(() => {
+    if (!hasTauri()) return;
+    let unlisten: (() => void) | null = null;
+    void listen<SearchIndexProgressPayload>("search-index://progress", (event) => {
+      setSearchIndexProgress(event.payload);
+    })
+      .then((nextUnlisten) => {
+        unlisten = nextUnlisten;
+      })
+      .catch(() => undefined);
+    return () => unlisten?.();
+  }, []);
+
   const handlePlayedAsset = useCallback(
     (row: Extract<BrowseRow, { kind: "asset" }>) => {
       void recordActivity({
@@ -1889,6 +1964,8 @@ function AppShellContent() {
 
   const setSearchText = useCallback(
     (queryText: string) => {
+      setSearchIndexProgress(null);
+      setRelatedTagsOpen(false);
       const trimmed = queryText.trim();
       if (activeTab?.kind !== "search" && trimmed) {
         const nextTab = createSearchViewTab(queryText, activeIncludeUnavailable);
@@ -1965,6 +2042,25 @@ function AppShellContent() {
     }
     executeNow();
   }, [activeTab, executeNow, handleStartNewSearch, refreshActivity, searchText]);
+
+  const handleFindRelatedAsset = useCallback(
+    (asset: Extract<BrowseRow, { kind: "asset" }>) => {
+      const queryText = relatedTagQuery(asset.tags);
+      if (!queryText) return;
+      setRelatedTagsOpen(false);
+      setSearchText(queryText);
+    },
+    [setSearchText],
+  );
+
+  const handleAddRelatedSearchTag = useCallback(
+    (tag: string) => {
+      const queryText = `${searchText.trim()} ${tagFilterToken(tag)}`.trim();
+      setRelatedTagsOpen(false);
+      setSearchText(queryText);
+    },
+    [searchText, setSearchText],
+  );
 
   const handleCloseTab = useCallback(
     (tabId: string) => {
@@ -3486,60 +3582,106 @@ function AppShellContent() {
         </div>
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
           <ViewTabs
-          activeTabId={activeTabId}
-          onActivate={activateViewTab}
-          onClose={handleCloseTab}
-          tabs={tabModels}
+            activeTabId={activeTabId}
+            onActivate={activateViewTab}
+            onClose={handleCloseTab}
+            tabs={tabModels}
           />
-        {activeTab?.breadcrumbSegments.length ? (
-          <Breadcrumbs
-            onNavigate={handleBreadcrumbNavigate}
-            segments={activeTab.breadcrumbSegments}
-          />
-        ) : null}
-        {indexingStatus ? (
-          <div className="border-b border-border bg-panel px-3 py-1 text-[11px] text-muted-foreground">
-            Indexing: {indexingStatus}
-          </div>
-        ) : null}
-        {enabledLocalSourceIds !== null ? (
-          <div className="flex h-7 items-center justify-between border-b border-border bg-panel px-3 text-[11px] text-muted-foreground">
+          {activeTab?.breadcrumbSegments.length ? (
+            <Breadcrumbs
+              onNavigate={handleBreadcrumbNavigate}
+              segments={activeTab.breadcrumbSegments}
+            />
+          ) : null}
+          {indexingStatus ? (
+            <div className="border-b border-border bg-panel px-3 py-1 text-[11px] text-muted-foreground">
+              Indexing: {indexingStatus}
+            </div>
+          ) : null}
+          <div className="relative flex h-7 items-center justify-between border-b border-border bg-panel px-3 text-[11px] text-muted-foreground">
             <span>
               Library filter: {effectiveEnabledLocalSourceIds.length}/
               {localSourceIds.length} enabled
             </span>
-            <button
-              className="text-foreground hover:underline"
-              onClick={clearLocalSourceFilter}
-              type="button"
-            >
-              All libraries
-            </button>
+            <div className="flex items-center gap-3">
+              <button
+                className="text-foreground enabled:hover:underline disabled:cursor-not-allowed disabled:opacity-40"
+                disabled={!searchText.trim() || relatedTagOptions.length === 0}
+                onClick={() => setRelatedTagsOpen((open) => !open)}
+                title="Show tags that commonly occur in the current search results"
+                type="button"
+              >
+                Show related
+              </button>
+              {enabledLocalSourceIds !== null ? (
+                <button
+                  className="text-foreground hover:underline"
+                  onClick={clearLocalSourceFilter}
+                  type="button"
+                >
+                  All libraries
+                </button>
+              ) : null}
+            </div>
+            {relatedTagsOpen ? (
+              <div className="absolute right-3 top-full z-40 mt-1 w-72 overflow-hidden rounded-md border border-border bg-panel shadow-xl">
+                <div className="border-b border-border px-3 py-2 font-semibold text-foreground">
+                  Related tags in these results
+                </div>
+                <div className="max-h-64 overflow-auto p-1">
+                  {relatedTagOptions.map((option) => (
+                    <button
+                      className="flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-left text-foreground hover:bg-muted"
+                      key={option.tag}
+                      onClick={() => handleAddRelatedSearchTag(option.tag)}
+                      type="button"
+                    >
+                      <span className="truncate">{option.tag}</span>
+                      <span className="ml-3 tabular-nums text-muted-foreground">
+                        {option.count.toLocaleString()}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : null}
           </div>
-        ) : null}
-        <BrowseTable
-          density={browseDensity}
-          loading={browseLoading}
-          metadataByRowId={metadata}
-          onAddToCollection={handleOpenCollectionPickerForRow}
-          onAssetFileDragRequest={handleAssetFileDragRequest}
-          onDeleteRow={handleDeleteBrowseRow}
-          onGoToFolder={handleGoToRowFolder}
-          onInternalDragStart={handleInternalRowDragStart}
-          onOpenInExplorer={handleOpenRowInExplorer}
-          onOpenFolder={handleOpenFolderRow}
-          onSortChange={handleSortChange}
-          onVisibleRowsChange={handleVisibleRows}
-          preferInternalAssetDrag={assemblerOpen}
-          previewedRowIds={previewedRowIds}
-          queryText={searchText}
-          rows={rows}
-          sort={activeSort}
-          totalCount={activeResponse?.totalCount ?? rows.length}
-        />
-        <span aria-live="polite" className="sr-only">
-          {activeRowId ? `Active row ${activeRowId}` : "No active row"}
-        </span>
+          <BrowseTable
+            density={browseDensity}
+            loading={browseLoading}
+            loadingProgress={
+              browseLoading && searchIndexProgress && searchIndexProgress.total > 0
+                ? (searchIndexProgress.current / searchIndexProgress.total) * 100
+                : null
+            }
+            loadingStatus={
+              browseLoading && searchIndexProgress && searchIndexProgress.total > 0
+                ? `Indexing search data: ${searchIndexProgress.current.toLocaleString()}/${searchIndexProgress.total.toLocaleString()}`
+                : browseLoading
+                  ? "Searching…"
+                  : undefined
+            }
+            metadataByRowId={metadata}
+            onAddToCollection={handleOpenCollectionPickerForRow}
+            onAssetFileDragRequest={handleAssetFileDragRequest}
+            onDeleteRow={handleDeleteBrowseRow}
+            onFindRelated={handleFindRelatedAsset}
+            onGoToFolder={handleGoToRowFolder}
+            onInternalDragStart={handleInternalRowDragStart}
+            onOpenInExplorer={handleOpenRowInExplorer}
+            onOpenFolder={handleOpenFolderRow}
+            onSortChange={handleSortChange}
+            onVisibleRowsChange={handleVisibleRows}
+            preferInternalAssetDrag={assemblerOpen}
+            previewedRowIds={previewedRowIds}
+            queryText={searchText}
+            rows={rows}
+            sort={activeSort}
+            totalCount={activeResponse?.totalCount ?? rows.length}
+          />
+          <span aria-live="polite" className="sr-only">
+            {activeRowId ? `Active row ${activeRowId}` : "No active row"}
+          </span>
         </div>
       </section>
       {assemblerOpen ? (
@@ -3561,6 +3703,7 @@ function AppShellContent() {
         isSummaryOpen={summaryOpen && !assemblerOpen}
         onToggleAssembler={toggleAssembler}
         onExportsChanged={refreshActivity}
+        onFindRelated={handleFindRelatedAsset}
         onPlayedAsset={handlePlayedAsset}
         onPreviewedRow={markPreviewedRow}
         onToggleSummary={() => modalManager.toggle("file-summary")}

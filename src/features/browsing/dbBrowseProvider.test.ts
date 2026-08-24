@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { BrowseRequest } from "./browseTypes";
-import { buildBackendQuery } from "./dbBrowseProvider";
+import { buildBackendQuery, buildBackendTagFilters } from "./dbBrowseProvider";
 import { parseSearchGrammar } from "./searchGrammar";
 import { defaultSearchSort } from "./sortModel";
 
@@ -33,5 +33,15 @@ describe("database browse provider", () => {
     expect(buildBackendQuery(requestFor("format:ogg source:boom"))).toBe(
       '"ogg" "boom"',
     );
+  });
+
+  it("keeps tag filters out of FTS and sends them as exact tag constraints", () => {
+    const request = requestFor('tag:rubbing tagany:"cloth|fabric" metal');
+    expect(buildBackendQuery(request)).toContain('"metal"');
+    expect(buildBackendQuery(request)).not.toContain('"rubbing"');
+    expect(buildBackendTagFilters(request)).toEqual({
+      all: ["rubbing"],
+      any: ["cloth", "fabric"],
+    });
   });
 });

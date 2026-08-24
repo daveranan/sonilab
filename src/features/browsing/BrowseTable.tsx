@@ -35,6 +35,8 @@ type BrowseTableProps = {
   density?: BrowseDensity;
   metadataByRowId?: LazyMetadataResponse["metadataByRowId"];
   loading?: boolean;
+  loadingStatus?: string;
+  loadingProgress?: number | null;
   queryText?: string;
   onVisibleRowsChange?: (hint: VisibleWindowHint) => void;
   previewedRowIds?: Set<string>;
@@ -46,6 +48,7 @@ type BrowseTableProps = {
   onOpenFolder?: (row: Extract<BrowseRowModel, { kind: "folder" }>) => void;
   onInternalDragStart?: (event: React.DragEvent, row: BrowseRowModel) => void;
   onAddToCollection?: (row: BrowseRowModel) => void;
+  onFindRelated?: (row: Extract<BrowseRowModel, { kind: "asset" }>) => void;
   onOpenInExplorer?: (row: BrowseRowModel) => void;
   onGoToFolder?: (row: BrowseRowModel) => void;
   onDeleteRow?: (row: BrowseRowModel) => void;
@@ -124,11 +127,14 @@ export function BrowseTable({
   density = "standard",
   metadataByRowId = {},
   loading = false,
+  loadingStatus,
+  loadingProgress,
   queryText = "",
   onVisibleRowsChange,
   onAssetFileDragRequest,
   onAddToCollection,
   onDeleteRow,
+  onFindRelated,
   onOpenInExplorer,
   onGoToFolder,
   preferInternalAssetDrag = false,
@@ -441,6 +447,7 @@ export function BrowseTable({
                   onAssetFileDragRequest={onAssetFileDragRequest}
                   onClick={handleRowClick}
                   onDeleteRow={onDeleteRow}
+                  onFindRelated={onFindRelated}
                   onInternalDragStart={onInternalDragStart}
                   onOpenInExplorer={onOpenInExplorer}
                   onGoToFolder={onGoToFolder}
@@ -460,7 +467,9 @@ export function BrowseTable({
           <BrowseLoadingRows
             columns={visibleColumns}
             gridTemplateColumns={gridTemplateColumns}
+            progress={loadingProgress}
             rowHeight={densitySetting.rowHeight}
+            status={loadingStatus}
           />
         ) : null}
         {!loading && rows.length === 0 ? <NoResults queryText={queryText} /> : null}
@@ -485,11 +494,15 @@ function NoResults({ queryText }: { queryText: string }) {
 function BrowseLoadingRows({
   columns,
   gridTemplateColumns,
+  progress,
   rowHeight,
+  status,
 }: {
   columns: BrowseColumn[];
   gridTemplateColumns: string;
+  progress?: number | null;
   rowHeight: number;
+  status?: string;
 }) {
   return (
     <div
@@ -515,6 +528,21 @@ function BrowseLoadingRows({
           ))}
         </div>
       ))}
+      {status ? (
+        <div className="absolute inset-x-0 top-16 flex justify-center px-6">
+          <div className="w-[min(440px,80%)] rounded-md border border-border bg-panel/95 px-4 py-3 text-center shadow-xl">
+            <div className="font-medium text-foreground">{status}</div>
+            {progress !== null && progress !== undefined ? (
+              <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-muted">
+                <div
+                  className="h-full bg-primary transition-[width] duration-150"
+                  style={{ width: `${Math.max(0, Math.min(100, progress))}%` }}
+                />
+              </div>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

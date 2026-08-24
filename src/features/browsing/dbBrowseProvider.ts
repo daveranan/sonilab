@@ -96,6 +96,7 @@ export function createDbBrowseProvider(): BrowseProvider {
       try {
         const warnings: SearchWarning[] = [];
         const backendQuery = buildBackendQuery(request);
+        const tagFilters = buildBackendTagFilters(request);
         const sourceScope =
           request.sourceScope.kind === "cloud" || request.sourceScope.kind === "all"
             ? { kind: "local" as const }
@@ -108,6 +109,7 @@ export function createDbBrowseProvider(): BrowseProvider {
             collectionName: collectionNameFromRequest(request),
             favoriteFilter: favoriteFilterFromRequest(request),
             query: backendQuery ?? null,
+            tagFilters,
             limit: request.limit,
           },
         });
@@ -161,9 +163,6 @@ function emptyBrowseResponse(request: BrowseRequest): BrowseResponse {
 export function buildBackendQuery(request: BrowseRequest): string | undefined {
   const query = request.query;
   if (!query) return undefined;
-  const tagAny = query.filters.find(
-    (filter) => filter.field === "tagany" && !filter.negated,
-  );
   const userTagAny = query.filters.find(
     (filter) => filter.field === "usertagany" && !filter.negated,
   );
@@ -186,15 +185,6 @@ export function buildBackendQuery(request: BrowseRequest): string | undefined {
   ) {
     return `__user_tag__:${userTag.value}`;
   }
-  if (
-    tagAny &&
-    typeof tagAny.value === "string" &&
-    query.text.length === 0 &&
-    query.filters.length === 1
-  ) {
-    return `__tag_any__:${tagAny.value}`;
-  }
-
   const terms = [
     ...query.text
       .filter((term) => !term.startsWith("-"))
@@ -202,6 +192,27 @@ export function buildBackendQuery(request: BrowseRequest): string | undefined {
     ...query.filters.flatMap(filterToBackendTerms),
   ];
   return terms.length > 0 ? terms.join(" ") : undefined;
+}
+
+export function buildBackendTagFilters(request: BrowseRequest): {
+  all: string[];
+  any: string[];
+} {
+  const all: string[] = [];
+  const any: string[] = [];
+  for (const filter of request.query?.filters ?? []) {
+    if (filter.negated || typeof filter.value !== "string") continue;
+    if (filter.field === "tag") all.push(filter.value);
+    if (filter.field === "tagany") {
+      any.push(
+        ...filter.value
+          .split("|")
+          .map((tag) => tag.trim())
+          .filter(Boolean),
+      );
+    }
+  }
+  return { all, any };
 }
 
 function textTermToBackendExpression(term: string): string {
@@ -214,8 +225,6 @@ function filterToBackendTerms(filter: SearchFilter): string[] {
   if (filter.negated || typeof filter.value !== "string") return [];
   if (filter.field === "collection") return [];
   if (
-    filter.field === "tag" ||
-    filter.field === "tagany" ||
     filter.field === "usertag" ||
     filter.field === "usertagany" ||
     filter.field === "license" ||

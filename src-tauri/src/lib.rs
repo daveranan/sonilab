@@ -108,7 +108,23 @@ struct BrowseDatabaseRequest {
     collection_name: Option<String>,
     favorite_filter: Option<bool>,
     query: Option<String>,
+    tag_filters: Option<BrowseTagFiltersInput>,
     limit: Option<i64>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BrowseTagFiltersInput {
+    all: Vec<String>,
+    any: Vec<String>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SearchIndexProgressPayload {
+    current: usize,
+    total: usize,
+    status: &'static str,
 }
 
 #[derive(Debug, Deserialize)]
@@ -697,7 +713,16 @@ fn search_assets(
 }
 
 #[tauri::command]
-fn browse_database(
+async fn browse_database(
+    app: AppHandle,
+    request: BrowseDatabaseRequest,
+) -> Result<Vec<DatabaseBrowseRow>, String> {
+    tauri::async_runtime::spawn_blocking(move || browse_database_blocking(app, request))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+fn browse_database_blocking(
     app: AppHandle,
     request: BrowseDatabaseRequest,
 ) -> Result<Vec<DatabaseBrowseRow>, String> {
@@ -714,15 +739,43 @@ fn browse_database(
     let current_path = current_folder.as_deref().unwrap_or("");
     let limit = request.limit.unwrap_or(1_000).clamp(1, 50_000);
     let query = request.query.unwrap_or_default();
-    let search_ids = if query.trim().is_empty() {
+    let tag_filters = request.tag_filters.unwrap_or_default();
+    let mut search_ids = if query.trim().is_empty() {
         None
     } else {
+        // A search should be self-healing. This is intentionally incremental so a
+        // healthy library pays only for the inexpensive missing-row lookup.
+        let progress_app = app.clone();
+        repo.repair_missing_asset_search_documents_with_progress(|current, total| {
+            let _ = progress_app.emit(
+                "search-index://progress",
+                SearchIndexProgressPayload {
+                    current,
+                    total,
+                    status: if current >= total { "completed" } else { "indexing" },
+                },
+            );
+        })?;
         Some(
             search_asset_ids(repo.connection(), &query, limit)?
                 .into_iter()
                 .collect::<HashSet<_>>(),
         )
     };
+    if !tag_filters.all.is_empty() || !tag_filters.any.is_empty() {
+        let tag_ids = search_asset_ids_by_tag_filters(
+            repo.connection(),
+            &tag_filters.all,
+            &tag_filters.any,
+            limit,
+        )?
+        .into_iter()
+        .collect::<HashSet<_>>();
+        search_ids = Some(match search_ids {
+            Some(ids) => ids.intersection(&tag_ids).cloned().collect(),
+            None => tag_ids,
+        });
+    }
 
     if let Some(collection_id) = resolve_browse_collection_id(
         repo.connection(),
@@ -756,7 +809,7 @@ fn browse_database(
     }
 
     let mut rows = Vec::new();
-    if query.trim().is_empty() {
+    if search_ids.is_none() {
         for source_id in &source_ids {
             let source = repo.get_source(source_id)?;
             let source_name = source
@@ -2819,6 +2872,74 @@ fn db_asset_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<DbAssetBrowseR
         folder_path: row.get(27)?,
         metadata_json: row.get(28)?,
     })
+}
+
+fn search_asset_ids_by_tag_filters(
+    connection: &Connection,
+    all_tags: &[String],
+    any_tags: &[String],
+    limit: i64,
+) -> Result<Vec<String>, String> {
+    let canonical = |values: &[String]| {
+        let mut tags = values
+            .iter()
+            .filter_map(|tag| canonicalize_tag(tag))
+            .collect::<Vec<_>>();
+        tags.sort();
+        tags.dedup();
+        tags
+    };
+    let all_tags = canonical(all_tags);
+    let any_tags = canonical(any_tags);
+    if all_tags.is_empty() && any_tags.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let all_placeholders = std::iter::repeat("?")
+        .take(all_tags.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let any_placeholders = std::iter::repeat("?")
+        .take(any_tags.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let mut predicates = Vec::new();
+    if !all_tags.is_empty() {
+        predicates.push(format!(
+            "a.id IN (
+                SELECT asset_id FROM asset_tags
+                WHERE tag IN ({all_placeholders})
+                GROUP BY asset_id
+                HAVING COUNT(DISTINCT tag) = {}
+             )",
+            all_tags.len()
+        ));
+    }
+    if !any_tags.is_empty() {
+        predicates.push(format!(
+            "a.id IN (SELECT asset_id FROM asset_tags WHERE tag IN ({any_placeholders}))"
+        ));
+    }
+    let sql = format!(
+        "SELECT a.id FROM assets AS a WHERE {} ORDER BY a.id LIMIT ?",
+        predicates.join(" AND ")
+    );
+    let mut params = all_tags;
+    params.extend(any_tags);
+    params.push(limit.to_string());
+    let mut statement = connection
+        .prepare(&sql)
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map(params_from_iter(params.iter()), |row| {
+            row.get::<_, String>(0)
+        })
+        .map_err(|error| error.to_string())?;
+    let mut ids = Vec::new();
+    for row in rows {
+        ids.push(row.map_err(|error| error.to_string())?);
+    }
+    Ok(ids)
 }
 
 fn collect_db_assets<F>(

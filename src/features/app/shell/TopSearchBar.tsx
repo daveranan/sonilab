@@ -47,13 +47,14 @@ function visibleInputValueForQuery(
     .join(" ");
 }
 
-function queryValueFromChipsAndInput(
+export function queryValueFromChipsAndInput(
   chips: SearchFilterChip[],
   inputValue: string,
 ): string {
-  return [...chips.map(formatChipQueryToken), inputValue.trim()]
-    .filter(Boolean)
-    .join(" ");
+  const chipValue = chips.map(formatChipQueryToken).join(" ");
+  if (!chipValue) return inputValue;
+  if (!inputValue) return chipValue;
+  return `${chipValue} ${inputValue}`;
 }
 
 function commitDelimitedInputValue(inputValue: string): string | null {

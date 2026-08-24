@@ -12,6 +12,7 @@ import {
   Repeat2,
   RotateCcw,
   Settings2,
+  Sparkles,
   SkipBack,
   SkipForward,
   SlidersHorizontal,
@@ -114,6 +115,7 @@ type BottomDockPlaceholderProps = {
   onPreviewedRow: (rowId: string) => void;
   onPlayedAsset?: (row: Extract<BrowseRow, { kind: "asset" }>) => void;
   onExportsChanged?: () => void;
+  onFindRelated?: (row: Extract<BrowseRow, { kind: "asset" }>) => void;
   onToggleSummary: () => void;
   rows: BrowseRow[];
 };
@@ -311,6 +313,7 @@ export function BottomDockPlaceholder({
   isSummaryOpen,
   onToggleAssembler,
   onExportsChanged,
+  onFindRelated,
   onPlayedAsset,
   onPreviewedRow,
   onToggleSummary,
@@ -2270,6 +2273,16 @@ export function BottomDockPlaceholder({
             variant="ghost"
           >
             <RotateCcw className="size-4" />
+          </Button>
+          <Button
+            className="size-8 p-0"
+            disabled={!displayAsset || displayAsset.tags.length === 0}
+            onClick={() => displayAsset && onFindRelated?.(displayAsset)}
+            size="icon"
+            title="Find sounds related to this track"
+            variant="ghost"
+          >
+            <Sparkles className="size-4" />
           </Button>
         </div>
         <div className="flex min-w-0 flex-1 items-center gap-3 border-r border-border/70 px-3">

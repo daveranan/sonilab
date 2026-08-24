@@ -39,6 +39,7 @@ type BrowseRowProps = {
   preferInternalAssetDrag?: boolean;
   onInternalDragStart?: (event: React.DragEvent, row: BrowseRowModel) => void;
   onAddToCollection?: (row: BrowseRowModel) => void;
+  onFindRelated?: (row: Extract<BrowseRowModel, { kind: "asset" }>) => void;
   onOpenInExplorer?: (row: BrowseRowModel) => void;
   onGoToFolder?: (row: BrowseRowModel) => void;
   onDeleteRow?: (row: BrowseRowModel) => void;
@@ -139,6 +140,7 @@ function BrowseRowComponent({
   onAddToCollection,
   onAssetFileDragRequest,
   onDeleteRow,
+  onFindRelated,
   onGoToFolder,
   preferInternalAssetDrag = false,
   onInternalDragStart,
@@ -161,7 +163,9 @@ function BrowseRowComponent({
       ? sourcePathLabel(row.sourceName, row.path)
       : sourcePathLabel(row.sourceName, row.folderPath ?? containingFolderPath(row.relativePath));
   const rowTitle =
-    row.kind === "folder" ? (row.fullPath ?? row.path) : (row.fullPath ?? row.relativePath);
+    row.kind === "folder"
+      ? (row.fullPath ?? row.path)
+      : `${row.fullPath ?? row.relativePath}\nDrag to a collection. Alt-drag to export the file.`;
 
   const deleteLabel =
     selected && selectedCount > 1
@@ -280,6 +284,7 @@ function BrowseRowComponent({
       draggable={!preferInternalAssetDrag}
       onDragStart={(event) => {
         if (
+          event.altKey &&
           shouldStartAssetFileExportDrag({
             rowKind: row.kind,
             hasFileDragHandler:
@@ -424,6 +429,11 @@ function BrowseRowComponent({
         <ContextMenuItem onSelect={() => onAddToCollection?.(row)}>
           Add to collection
         </ContextMenuItem>
+        {!isFolder ? (
+          <ContextMenuItem onSelect={() => onFindRelated?.(row)}>
+            Find related sounds
+          </ContextMenuItem>
+        ) : null}
         <ContextMenuSeparator className="my-1 h-px bg-border" />
         <ContextMenuItem
           className="text-destructive focus:text-destructive"

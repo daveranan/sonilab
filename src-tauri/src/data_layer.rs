@@ -677,6 +677,89 @@ impl DataRepository {
         Ok(count)
     }
 
+    /// Restores search documents that are missing while leaving healthy rows alone.
+    ///
+    /// Older databases can contain fully indexed assets whose tag-enrichment version
+    /// caused a later metadata scan to skip the asset before its FTS row was created.
+    /// Search must be able to heal that partial state without requiring the user to
+    /// discover and run the manual "rebuild search index" action.
+    pub fn repair_missing_asset_search_documents(&self) -> Result<usize, String> {
+        self.repair_missing_asset_search_documents_with_progress(|_, _| {})
+    }
+
+    pub fn repair_missing_asset_search_documents_with_progress<F>(
+        &self,
+        mut on_progress: F,
+    ) -> Result<usize, String>
+    where
+        F: FnMut(usize, usize),
+    {
+        // `asset_id` is deliberately UNINDEXED inside FTS5, so a SQL anti-join is
+        // quadratic on large libraries. Build the membership set in Rust instead.
+        let indexed_ids = {
+            let mut statement = self
+                .connection
+                .prepare("SELECT asset_id FROM asset_search_fts")
+                .map_err(|error| error.to_string())?;
+            let rows = statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(|error| error.to_string())?;
+            let mut ids = std::collections::HashSet::new();
+            for row in rows {
+                ids.insert(row.map_err(|error| error.to_string())?);
+            }
+            ids
+        };
+        let asset_ids = {
+            let mut statement = self
+                .connection
+                .prepare("SELECT id FROM assets ORDER BY id")
+                .map_err(|error| error.to_string())?;
+            let rows = statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(|error| error.to_string())?;
+            let mut ids = Vec::new();
+            for row in rows {
+                let id = row.map_err(|error| error.to_string())?;
+                if !indexed_ids.contains(&id) {
+                    ids.push(id);
+                }
+            }
+            ids
+        };
+
+        if asset_ids.is_empty() {
+            on_progress(0, 0);
+            return Ok(0);
+        }
+        on_progress(0, asset_ids.len());
+        self.connection
+            .execute_batch("BEGIN IMMEDIATE")
+            .map_err(|error| error.to_string())?;
+        let result = (|| {
+            for (index, asset_id) in asset_ids.iter().enumerate() {
+                self.index_asset_for_search(asset_id)?;
+                let completed = index + 1;
+                if completed == asset_ids.len() || completed % 25 == 0 {
+                    on_progress(completed, asset_ids.len());
+                }
+            }
+            Ok::<usize, String>(asset_ids.len())
+        })();
+        match result {
+            Ok(count) => {
+                self.connection
+                    .execute_batch("COMMIT")
+                    .map_err(|error| error.to_string())?;
+                Ok(count)
+            }
+            Err(error) => {
+                let _ = self.connection.execute_batch("ROLLBACK");
+                Err(error)
+            }
+        }
+    }
+
     pub fn index_asset_for_search(&self, asset_id: &str) -> Result<(), String> {
         let document = self.asset_search_document(asset_id)?;
         self.upsert_asset_search_document(document)
@@ -1942,6 +2025,57 @@ mod tests {
             )
             .expect("read facet");
         assert_eq!(favorite, 1);
+    }
+
+    #[test]
+    fn search_index_repair_restores_only_missing_asset_documents() {
+        let repo = migrated_repo();
+        let source = repo
+            .create_local_source("Main SFX", "F:/Audio/SFX")
+            .expect("create local source");
+        let first = repo
+            .upsert_asset(sample_asset_input(
+                &source.id,
+                stable_local_asset_key("first.wav", 1024, "2026-01-01T00:00:00Z", None),
+                "first rubbing.wav",
+            ))
+            .expect("insert first asset");
+        repo.upsert_asset(sample_asset_input(
+            &source.id,
+            stable_local_asset_key("second.wav", 1024, "2026-01-01T00:00:00Z", None),
+            "second rubbing.wav",
+        ))
+        .expect("insert second asset");
+        repo.connection()
+            .execute(
+                "DELETE FROM asset_search_fts WHERE asset_id = ?1",
+                params![first.id],
+            )
+            .expect("remove one search document");
+
+        let mut progress = Vec::new();
+        assert_eq!(
+            repo.repair_missing_asset_search_documents_with_progress(|current, total| {
+                progress.push((current, total));
+            })
+            .expect("repair index"),
+            1
+        );
+        assert_eq!(progress, vec![(0, 1), (1, 1)]);
+        assert_eq!(
+            repo.search_assets(AssetSearchRequest {
+                query: Some("rubbing".to_string()),
+                limit: Some(10),
+            })
+            .expect("search repaired index")
+            .len(),
+            2
+        );
+        assert_eq!(
+            repo.repair_missing_asset_search_documents()
+                .expect("healthy index"),
+            0
+        );
     }
 
     #[test]
