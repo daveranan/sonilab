@@ -1551,6 +1551,7 @@ export function BottomDockPlaceholder({
       channelMode: processing.channelMode,
       eq: processing.eq,
       pitchSemitones: processing.pitchSemitones,
+      reversed: processing.reversed,
       includeAttributionSidecar: includeSidecar,
       loopCrossfadeSeconds: activeLoopCrossfadeSeconds || null,
       loopCrossfadeSlope,
@@ -1601,6 +1602,7 @@ export function BottomDockPlaceholder({
     processing.gainDb,
     processing.channelMode,
     processing.pitchSemitones,
+    processing.reversed,
     regionFadeGapSeconds,
     regionFadeInSlope,
     regionFadeOutSlope,
@@ -1706,6 +1708,7 @@ export function BottomDockPlaceholder({
         channelMode: processing.channelMode,
         eq: processing.eq,
         pitchSemitones: processing.pitchSemitones,
+        reversed: processing.reversed,
         loopCrossfadeSeconds: activeLoopCrossfadeSeconds || null,
         loopCrossfadeSlope,
         regionFadeGapSeconds,
@@ -1743,6 +1746,7 @@ export function BottomDockPlaceholder({
     processing.gainDb,
     processing.channelMode,
     processing.pitchSemitones,
+    processing.reversed,
     tempFolder,
   ]);
 
@@ -1792,6 +1796,7 @@ export function BottomDockPlaceholder({
             channelMode: processing.channelMode,
             eq: processing.eq,
             pitchSemitones: processing.pitchSemitones,
+            reversed: processing.reversed,
             loopCrossfadeSeconds: activeLoopCrossfadeSeconds || null,
             loopCrossfadeSlope,
             regionFadeGapSeconds,
@@ -2033,6 +2038,7 @@ export function BottomDockPlaceholder({
                 channelMode: processing.channelMode,
                 eq: processing.eq,
                 pitchSemitones: processing.pitchSemitones,
+                reversed: processing.reversed,
                 region: null,
                 tempFolder,
               }),
@@ -2269,7 +2275,7 @@ export function BottomDockPlaceholder({
             )}
             onClick={toggleReverse}
             size="icon"
-            title="Reverse playback (R)"
+            title="Reverse playback and export (R)"
             variant="ghost"
           >
             <RotateCcw className="size-4" />

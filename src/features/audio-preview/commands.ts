@@ -153,6 +153,7 @@ type ExportProcessingInput = {
   channelMode?: ChannelMonitorMode;
   eq?: EqualizerSettings;
   pitchSemitones?: number;
+  reversed?: boolean;
 };
 
 const transparentDragIcon =
@@ -201,6 +202,7 @@ function createExportProcessingChain(input: ExportProcessingInput) {
     channelMode: input.channelMode,
     eq: input.eq,
     pitchSemitones: input.pitchSemitones,
+    reversed: input.reversed,
   });
 }
 
@@ -520,6 +522,7 @@ export async function queueGainExportJob(input: {
   channelMode?: ChannelMonitorMode;
   eq?: EqualizerSettings;
   pitchSemitones?: number;
+  reversed?: boolean;
 }): Promise<ExportJobSnapshot | null> {
   if (!hasTauri()) return null;
   const chain = createExportProcessingChain(input);
@@ -551,6 +554,7 @@ export async function queueGainExportJobs(input: {
   channelMode?: ChannelMonitorMode;
   eq?: EqualizerSettings;
   pitchSemitones?: number;
+  reversed?: boolean;
   loopCrossfadeSeconds?: number | null;
   loopCrossfadeSlope?: number | null;
   regionFadeGapSeconds?: number | null;
@@ -623,6 +627,7 @@ export async function prepareRegionDragFile(input: {
   channelMode?: ChannelMonitorMode;
   eq?: EqualizerSettings;
   pitchSemitones?: number;
+  reversed?: boolean;
   loopCrossfadeSeconds?: number | null;
   loopCrossfadeSlope?: number | null;
   regionFadeGapSeconds?: number | null;
@@ -667,6 +672,7 @@ export async function prepareAssetDragFile(input: {
   channelMode?: ChannelMonitorMode;
   eq?: EqualizerSettings;
   pitchSemitones?: number;
+  reversed?: boolean;
   regionFadeGapSeconds?: number | null;
   regionFadeInSeconds?: number | null;
   regionFadeInSlope?: number | null;
@@ -820,7 +826,8 @@ export async function startPreparedFilesDrag(
       return {
         ok: false,
         effect: "none",
-        error: "Multi-file drag could not start safely; prepared files are still available.",
+        error:
+          "Multi-file drag could not start safely; prepared files are still available.",
         diagnostics: [
           pluginDiagnostic,
           "Skipped the blocking Windows native multi-file drag fallback.",
@@ -859,6 +866,7 @@ export async function startRegionFileDrag(input: {
   channelMode?: ChannelMonitorMode;
   eq?: EqualizerSettings;
   pitchSemitones?: number;
+  reversed?: boolean;
   loopCrossfadeSeconds?: number | null;
   loopCrossfadeSlope?: number | null;
   regionFadeGapSeconds?: number | null;
@@ -885,6 +893,7 @@ export async function startAssetFileDrag(input: {
   channelMode?: ChannelMonitorMode;
   eq?: EqualizerSettings;
   pitchSemitones?: number;
+  reversed?: boolean;
   formatSettings?: ExportFormatSettings;
   tempFolder?: string;
 }): Promise<RegionFileDragResult | null> {
@@ -902,6 +911,7 @@ export async function startAssetFilesDrag(input: {
   channelMode?: ChannelMonitorMode;
   eq?: EqualizerSettings;
   pitchSemitones?: number;
+  reversed?: boolean;
   formatSettings?: ExportFormatSettings;
   tempFolder?: string;
 }): Promise<MultiFileDragResult | null> {
@@ -917,6 +927,7 @@ export async function startAssetFilesDrag(input: {
       channelMode: input.channelMode,
       eq: input.eq,
       pitchSemitones: input.pitchSemitones,
+      reversed: input.reversed,
       region: null,
       tempFolder: input.tempFolder,
     });

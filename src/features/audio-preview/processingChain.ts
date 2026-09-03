@@ -29,13 +29,18 @@ export type ChannelStage = {
   channels: number[];
 };
 
+export type ReverseStage = {
+  enabled: true;
+};
+
 export type ProcessingChain = {
   version: 1;
   gain: GainStage;
   channel?: ChannelStage;
   eq?: EqStage;
   pitch?: PitchStage;
-  chainOrder: ("gain" | "channel" | "eq" | "pitch")[];
+  reverse?: ReverseStage;
+  chainOrder: ("reverse" | "gain" | "channel" | "eq" | "pitch")[];
 };
 
 export const ANALYSIS_PROFILE_HASH = "peak-rms-v1:sample-rms:decoded-pcm";
@@ -49,11 +54,15 @@ export function createProcessingChain(input: {
   channelMode?: ChannelMonitorMode;
   eq?: EqualizerSettings;
   pitchSemitones?: number;
+  reversed?: boolean;
 }): ProcessingChain {
   const channel = normalizedChannelStage(input.channelMode ?? "all");
   const eq = normalizedEqStage(input.eq);
   const pitch = normalizedPitchStage(input.pitchSemitones ?? 0);
-  const chainOrder: ProcessingChain["chainOrder"] = ["gain"];
+  const reverse = input.reversed ? { enabled: true as const } : null;
+  const chainOrder: ProcessingChain["chainOrder"] = [];
+  if (reverse) chainOrder.push("reverse");
+  chainOrder.push("gain");
   if (channel) chainOrder.push("channel");
   if (eq) chainOrder.push("eq");
   if (pitch) chainOrder.push("pitch");
@@ -68,6 +77,7 @@ export function createProcessingChain(input: {
     ...(channel ? { channel } : {}),
     ...(eq ? { eq } : {}),
     ...(pitch ? { pitch } : {}),
+    ...(reverse ? { reverse } : {}),
     chainOrder,
   };
 }
@@ -79,12 +89,16 @@ export function canonicalProcessingChain(chain: ProcessingChain): string {
     ...(chain.eq ? { eq: chain.eq } : {}),
     gain: chain.gain,
     ...(chain.pitch ? { pitch: chain.pitch } : {}),
+    ...(chain.reverse ? { reverse: chain.reverse } : {}),
     version: chain.version,
   });
 }
 
 export function processingHash(chain: ProcessingChain): string {
   const parts: string[] = [];
+  if (chain.reverse?.enabled) {
+    parts.push("reverse");
+  }
   if (Math.abs(chain.gain.gainDb) >= 0.005) {
     parts.push(`gain:${chain.gain.gainDb.toFixed(2)}`);
   }

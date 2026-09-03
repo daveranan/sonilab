@@ -2096,14 +2096,16 @@ function drawLoopCrossfadeOverlay(
   for (let step = 0; step <= 24; step += 1) {
     const t = step / 24;
     const x = startX + t * leftCurveWidth;
-    const y = height * 0.72 - Math.pow(t, slope) * height * 0.42;
+    const y =
+      height * 0.72 - clickSafeCrossfadeProgress(t, slope) * height * 0.42;
     if (step === 0) context.moveTo(x, y);
     else context.lineTo(x, y);
   }
   for (let step = 0; step <= 24; step += 1) {
     const t = step / 24;
     const x = rightStartX + t * rightCurveWidth;
-    const y = height * 0.3 + Math.pow(t, slope) * height * 0.42;
+    const y =
+      height * 0.3 + clickSafeCrossfadeProgress(t, slope) * height * 0.42;
     if (step === 0) context.moveTo(x, y);
     else context.lineTo(x, y);
   }
@@ -2325,7 +2327,19 @@ function drawSlopeDiamond(
 }
 
 function loopCrossfadeSlopeHandleY(height: number, slope: number): number {
-  return height * 0.72 - Math.pow(0.5, slope) * height * 0.42;
+  return (
+    height * 0.72 - clickSafeCrossfadeProgress(0.5, slope) * height * 0.42
+  );
+}
+
+function clickSafeCrossfadeProgress(progress: number, slope: number): number {
+  const clampedProgress = Math.max(0, Math.min(1, progress));
+  if (clampedProgress === 0 || clampedProgress === 1) return clampedProgress;
+  const smooth =
+    clampedProgress * clampedProgress * (3 - 2 * clampedProgress);
+  const midpoint = Math.pow(0.5, clampedLoopCrossfadeSlope(slope));
+  const bias = (1 - midpoint) / midpoint;
+  return smooth / (smooth + bias * (1 - smooth));
 }
 
 function regionFadeSlopeHandleY(

@@ -55,8 +55,14 @@ export function RightInspector({
         gainDb: processing.gainDb,
         eq: processing.eq,
         pitchSemitones: processing.pitchSemitones,
+        reversed: processing.reversed,
       }),
-    [processing.eq, processing.gainDb, processing.pitchSemitones],
+    [
+      processing.eq,
+      processing.gainDb,
+      processing.pitchSemitones,
+      processing.reversed,
+    ],
   );
   const categorySummary = useMemo(
     () => (activeAsset ? categorySummaryForTags(activeAsset.tags) : ""),
@@ -241,13 +247,14 @@ export function RightInspector({
         </div>
         <ol className="space-y-1 text-muted-foreground">
           <li>1. Input trim for selected-region export</li>
-          <li>2. Gain {processing.gainDb.toFixed(1)} dB</li>
+          <li>2. Reverse {processing.reversed ? "on" : "off"}</li>
+          <li>3. Gain {processing.gainDb.toFixed(1)} dB</li>
           <li>
-            3. EQ L {processing.eq.lowDb.toFixed(1)} / M{" "}
+            4. EQ L {processing.eq.lowDb.toFixed(1)} / M{" "}
             {processing.eq.midDb.toFixed(1)} / H {processing.eq.highDb.toFixed(1)} dB
           </li>
-          <li>4. Pitch {processing.pitchSemitones.toFixed(1)} st</li>
-          <li>5. Export encoding</li>
+          <li>5. Pitch {processing.pitchSemitones.toFixed(1)} st</li>
+          <li>6. Export encoding</li>
         </ol>
         <code className="mt-3 block truncate rounded-sm bg-background p-2 text-[10px] text-muted-foreground">
           {canonicalProcessingChain(chain)}

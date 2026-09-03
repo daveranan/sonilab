@@ -51,6 +51,17 @@ describe("processing chain", () => {
     );
   });
 
+  it("adds temporary reversal to the export contract and cache identity", () => {
+    const chain = createProcessingChain({ gainDb: 0, reversed: true });
+
+    expect(chain.chainOrder).toEqual(["reverse", "gain"]);
+    expect(chain.reverse).toEqual({ enabled: true });
+    expect(processingHash(chain)).toBe("processing:reverse");
+    expect(canonicalProcessingChain(chain)).toBe(
+      '{"chainOrder":["reverse","gain"],"gain":{"enabled":true,"gainDb":0,"minDb":-24,"maxDb":36},"reverse":{"enabled":true},"version":1}',
+    );
+  });
+
   it("keys full-file analysis by asset content, gain settings, and profile", () => {
     const original = analysisCacheKey("asset-content-a", createGainProcessingChain(0));
     const processed = analysisCacheKey("asset-content-a", createGainProcessingChain(3));

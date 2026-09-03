@@ -196,6 +196,11 @@ struct ChannelStage {
 }
 
 #[derive(Debug, Deserialize)]
+struct ReverseStage {
+    enabled: bool,
+}
+
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GainProcessingChain {
     version: i64,
@@ -203,6 +208,7 @@ struct GainProcessingChain {
     channel: Option<ChannelStage>,
     eq: Option<EqStage>,
     pitch: Option<PitchStage>,
+    reverse: Option<ReverseStage>,
     chain_order: Vec<String>,
 }
 
@@ -1129,6 +1135,7 @@ pub fn prepare_assembly_drag_file(
             channel: None,
             eq: None,
             pitch: None,
+            reverse: None,
             chain_order: Vec::new(),
         };
         let job = ExportJobRecord {
@@ -1203,12 +1210,23 @@ fn validate_gain_processing_chain(
     }
     let mut seen = std::collections::HashSet::new();
     for stage in &chain.chain_order {
-        if !matches!(stage.as_str(), "gain" | "channel" | "eq" | "pitch") {
+        if !matches!(
+            stage.as_str(),
+            "reverse" | "gain" | "channel" | "eq" | "pitch"
+        ) {
             return Err("unsupported processing stage".to_string());
         }
         if !seen.insert(stage.as_str()) {
             return Err("duplicate processing stage".to_string());
         }
+    }
+    let has_reverse_stage = chain.chain_order.iter().any(|stage| stage == "reverse");
+    let reverse_enabled = chain
+        .reverse
+        .as_ref()
+        .is_some_and(|reverse| reverse.enabled);
+    if has_reverse_stage != reverse_enabled {
+        return Err("invalid reverse stage".to_string());
     }
     if !chain.gain.enabled || chain.gain.min_db != -24.0 || chain.gain.max_db != 36.0 {
         return Err("invalid gain stage".to_string());
@@ -1575,6 +1593,7 @@ fn should_use_native_wav(
         && settings.wav_bit_depth.unwrap_or(16) == 16
         && settings.wav_sample_rate.is_none()
         && matches!(source_format.as_str(), "wav" | "wave")
+        && !chain_is_reversed(chain)
         && chain_has_native_only_processing(chain)
 }
 
@@ -1591,6 +1610,7 @@ fn should_use_native_wav_intermediate(
     job.format != "wav"
         && job.export_scope == "region"
         && matches!(source_format.as_str(), "wav" | "wave")
+        && !chain_is_reversed(chain)
         && chain_has_native_only_processing(chain)
         && (job.loop_crossfade_seconds.unwrap_or(0.0) > 0.0
             || normalized_region_fade_seconds(job) != (0.0, 0.0))
@@ -1605,6 +1625,13 @@ fn chain_has_native_only_processing(chain: &GainProcessingChain) -> bool {
     }) && chain.pitch.as_ref().map_or(true, |pitch| {
         !pitch.enabled || pitch.semitones.abs() < 0.000_001
     })
+}
+
+fn chain_is_reversed(chain: &GainProcessingChain) -> bool {
+    chain
+        .reverse
+        .as_ref()
+        .is_some_and(|reverse| reverse.enabled)
 }
 
 fn selected_channel_indexes(
@@ -1721,6 +1748,7 @@ fn noop_gain_processing_chain() -> GainProcessingChain {
         channel: None,
         eq: None,
         pitch: None,
+        reverse: None,
         chain_order: vec!["gain".to_string()],
     }
 }
@@ -2023,14 +2051,11 @@ fn build_ffmpeg_args(
             .ok_or_else(|| "region export requires end seconds".to_string())?;
         let duration = end - start;
         let body_end = duration - crossfade_seconds;
-        let slope = job.loop_crossfade_slope.unwrap_or(1.0);
-        let (tail_curve, head_curve) = if slope < 0.85 {
-            ("exp", "log")
-        } else if slope > 1.15 {
-            ("log", "exp")
-        } else {
-            ("tri", "tri")
-        };
+        // FFmpeg's exp/log pair has a non-zero (and at the steep end very large)
+        // first sample step.  That step is heard as a click in encoded exports.
+        // `desi` is a complementary sigmoid with flat endpoints, matching the
+        // click-safe endpoint behavior of the native renderer below.
+        let (tail_curve, head_curve) = ("desi", "desi");
         let processing_filters = ffmpeg_processing_filter_suffix(chain);
         args.push("-filter_complex".to_string());
         args.push(format!(
@@ -2113,6 +2138,11 @@ fn ffmpeg_processing_filters(chain: &GainProcessingChain) -> Vec<String> {
     let mut filters = Vec::new();
     for stage in &chain.chain_order {
         match stage.as_str() {
+            "reverse" => {
+                if chain_is_reversed(chain) {
+                    filters.push("areverse".to_string());
+                }
+            }
             "gain" => {
                 let gain_db = chain.gain.gain_db.clamp(-24.0, 36.0);
                 if chain.gain.enabled && gain_db.abs() >= 0.005 {
@@ -2132,6 +2162,11 @@ fn ffmpeg_processing_filters_excluding_gain(chain: &GainProcessingChain) -> Vec<
     let mut filters = Vec::new();
     for stage in &chain.chain_order {
         match stage.as_str() {
+            "reverse" => {
+                if chain_is_reversed(chain) {
+                    filters.push("areverse".to_string());
+                }
+            }
             "channel" => append_channel_filter(chain.channel.as_ref(), &mut filters),
             "eq" => append_eq_filters(chain.eq.as_ref(), &mut filters),
             "pitch" => append_pitch_filters(chain.pitch.as_ref(), &mut filters),
@@ -2429,6 +2464,9 @@ fn processing_hash_from_processing_json(processing_json: &str) -> Result<String,
 
 fn processing_hash_for_chain(chain: &GainProcessingChain) -> String {
     let mut parts = Vec::new();
+    if chain_is_reversed(chain) {
+        parts.push("reverse".to_string());
+    }
     let gain_db = chain.gain.gain_db.clamp(-24.0, 36.0);
     if gain_db.abs() >= 0.005 {
         parts.push(format!("gain:{gain_db:.2}"));
@@ -2624,6 +2662,23 @@ fn clamped_fade_slope(slope: f64) -> f64 {
     slope.clamp(0.25, 4.0)
 }
 
+/// Returns a monotonic crossfade position with zero slope at both endpoints.
+///
+/// The old `progress.powf(slope)` curve could move a large fraction of the
+/// crossfade in one sample when `slope < 1`, creating the very discontinuity a
+/// loop crossfade is intended to remove.  Smoothstep supplies quiet endpoints;
+/// the rational bias preserves the previous slope control's midpoint.
+fn click_safe_crossfade_progress(progress: f32, slope: f64) -> f32 {
+    let progress = progress.clamp(0.0, 1.0);
+    if progress <= 0.0 || progress >= 1.0 {
+        return progress;
+    }
+    let smooth = progress * progress * (3.0 - 2.0 * progress);
+    let midpoint = 0.5_f32.powf(clamped_fade_slope(slope) as f32);
+    let bias = (1.0 - midpoint) / midpoint;
+    smooth / (smooth + bias * (1.0 - smooth))
+}
+
 fn render_crossfaded_wav_loop_16_bit(
     bytes: &[u8],
     wav: &WavInfo,
@@ -2640,7 +2695,11 @@ fn render_crossfaded_wav_loop_16_bit(
     if region_frames < 2 {
         return Err("export range has no audio frames".to_string());
     }
-    let fade_frames = crossfade_frames.clamp(1, (region_frames - 1) / 2);
+    let max_fade_frames = (region_frames - 1) / 2;
+    if max_fade_frames < 2 {
+        return Err("crossfade requires at least 5 audio frames".to_string());
+    }
+    let fade_frames = crossfade_frames.clamp(2, max_fade_frames);
     let output_frames = region_frames - fade_frames;
     let output_channels = output_channel_count(selected_channels, wav.channels);
     let output_bits = 16_u16;
@@ -2666,7 +2725,7 @@ fn render_crossfaded_wav_loop_16_bit(
                 let fade_frame = output_frame - crossfade_start_frame;
                 let denominator = fade_frames.saturating_sub(1).max(1) as f32;
                 let progress = fade_frame as f32 / denominator;
-                let head_weight = progress.powf(crossfade_slope as f32);
+                let head_weight = click_safe_crossfade_progress(progress, crossfade_slope);
                 let tail_weight = 1.0 - head_weight;
                 let head = read_wav_sample(bytes, wav, start_frame + fade_frame, source_channel)?;
                 let tail = read_wav_sample(
@@ -2706,7 +2765,11 @@ fn render_crossfaded_pcm_loop_16_bit(
     if region_frames < 2 {
         return Err("export range has no audio frames".to_string());
     }
-    let fade_frames = crossfade_frames.clamp(1, (region_frames - 1) / 2);
+    let max_fade_frames = (region_frames - 1) / 2;
+    if max_fade_frames < 2 {
+        return Err("crossfade requires at least 5 audio frames".to_string());
+    }
+    let fade_frames = crossfade_frames.clamp(2, max_fade_frames);
     let output_frames = region_frames - fade_frames;
     let output_channels = output_channel_count(selected_channels, pcm.channels);
     let data_size = output_frames * usize::from(output_channels) * 2;
@@ -2729,7 +2792,7 @@ fn render_crossfaded_pcm_loop_16_bit(
             let sample = if output_frame >= crossfade_start_frame {
                 let fade_frame = output_frame - crossfade_start_frame;
                 let progress = fade_frame as f32 / fade_frames.saturating_sub(1).max(1) as f32;
-                let head_weight = progress.powf(crossfade_slope as f32);
+                let head_weight = click_safe_crossfade_progress(progress, crossfade_slope);
                 let tail_weight = 1.0 - head_weight;
                 let head = pcm.sample(start_frame + fade_frame, source_channel);
                 let tail = pcm.sample(end_frame - fade_frames + fade_frame, source_channel);
@@ -3594,6 +3657,19 @@ mod tests {
     }
 
     #[test]
+    fn reverse_processing_is_validated_hashed_and_rendered() {
+        let processing_json = r#"{"chainOrder":["reverse","gain"],"gain":{"enabled":true,"gainDb":0,"minDb":-24,"maxDb":36},"reverse":{"enabled":true},"version":1}"#;
+        let chain: GainProcessingChain =
+            serde_json::from_str(processing_json).expect("reverse processing chain");
+
+        validate_gain_processing_chain(processing_json, "processing:reverse")
+            .expect("valid reverse processing chain");
+        assert_eq!(processing_hash_for_chain(&chain), "processing:reverse");
+        assert_eq!(ffmpeg_processing_filters(&chain), vec!["areverse"]);
+        assert!(!is_noop_processing_chain(&chain));
+    }
+
+    #[test]
     fn rejects_unknown_processing_contracts() {
         let connection = test_connection();
         let mut input = test_export_input("asset_test");
@@ -3786,7 +3862,35 @@ mod tests {
 
         assert!(filter.contains("[base]atrim=start=0.050000:end=0.450000"));
         assert!(!filter.contains("[base]atrim=start=0:end=0.450000"));
+        assert!(filter.contains("acrossfade=d=0.050000:c1=desi:c2=desi"));
         let _ = fs::remove_file(source_path);
+    }
+
+    #[test]
+    fn crossfade_curve_has_quiet_exact_endpoints_for_every_supported_slope() {
+        let sample_step = 1.0 / 4_800.0;
+        for slope in [0.25, 1.0, 4.0] {
+            let start = click_safe_crossfade_progress(0.0, slope);
+            let after_start = click_safe_crossfade_progress(sample_step, slope);
+            let before_end = click_safe_crossfade_progress(1.0 - sample_step, slope);
+            let end = click_safe_crossfade_progress(1.0, slope);
+
+            assert_eq!(start, 0.0, "slope {slope}");
+            assert_eq!(end, 1.0, "slope {slope}");
+            assert!(after_start >= start, "slope {slope}");
+            assert!(before_end <= end, "slope {slope}");
+            assert!(after_start - start < 0.000_01, "slope {slope}");
+            assert!(end - before_end < 0.000_01, "slope {slope}");
+        }
+    }
+
+    #[test]
+    fn crossfade_curve_preserves_the_slope_controls_midpoint() {
+        for slope in [0.25, 1.0, 1.8, 4.0] {
+            let expected = 0.5_f32.powf(slope as f32);
+            let actual = click_safe_crossfade_progress(0.5, slope);
+            assert!((actual - expected).abs() < 0.000_001, "slope {slope}");
+        }
     }
 
     #[test]
