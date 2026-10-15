@@ -2,6 +2,8 @@
 
 Desktop sound library browser, previewer, processor, and exporter for large local audio collections.
 
+![Sonilabs browsing sound libraries with tag search, audio results, and waveform preview](docs/images/sonilabs-screenshot.png)
+
 ## GitHub Description
 
 Local-first desktop app for browsing, previewing, analyzing, processing, and exporting large sound libraries.
